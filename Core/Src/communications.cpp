@@ -68,6 +68,7 @@ public:
     void handler(const reg_udral_physics_kinematics_rotation_Planar_0_1& js_in, CanardRxTransfer* transfer) override
     {
         UNUSED(transfer);
+        HAL_GPIO_TogglePin(LED1_GPIO_Port, LED1_Pin);
     	const float velocity = js_in.angular_velocity.radian_per_second;
     	const float position = js_in.angular_position.radian;
     	const float acceleration = js_in.angular_acceleration.radian_per_second_per_second;
@@ -365,7 +366,6 @@ void send_JS(void) {             //float* pos, float* vel, float* eff
 void heartbeat() {
 	static CanardTransferID hbeat_transfer_id = 0;
 	static uint32_t uptime = 0;
-    HAL_GPIO_TogglePin(LED1_GPIO_Port, LED1_Pin);
     uavcan_node_Heartbeat_1_0 heartbeat_msg = {
         .uptime = uptime,
         .health = {uavcan_node_Health_1_0_NOMINAL},

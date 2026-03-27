@@ -9,7 +9,7 @@
 extern "C" {
 #endif
 
-static const uint8_t SR_JOINT_INDEX = 1U;
+static const uint8_t SR_JOINT_INDEX = 3U;
 
 typedef struct robot_joint_profile {
     uint8_t joint_index;
