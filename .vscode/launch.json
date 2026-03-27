@@ -1,0 +1,79 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Build firmware + Debug (OpenOCD)",
+            "cwd": "${workspaceFolder}",
+            "type": "cortex-debug",
+            "request": "launch",
+            "preLaunchTask": "Build firmware",
+            "servertype": "openocd",
+            "executable": "${command:cmake.launchTargetPath}",
+            "device": "STM32G474RETx",
+            "interface": "swd",
+            "runToEntryPoint": "main",
+            "serverpath": "openocd",
+            "gdbPath": "/usr/bin/gdb-multiarch",
+            "svdFile": "${config:STM32VSCodeExtension.cubeCLT.path}/STMicroelectronics_CMSIS_SVD/STM32G474.svd",
+            "configFiles": [
+                "interface/stlink.cfg",
+                "target/stm32g4x.cfg"
+            ],
+            "serverArgs": [
+                "-c",
+                "transport select hla_swd",
+                "-c",
+                "adapter speed 4000"
+            ]
+        },
+        {
+            "name": "Build + Flash + Debug (OpenOCD)",
+            "cwd": "${workspaceFolder}",
+            "type": "cortex-debug",
+            "request": "launch",
+            "preLaunchTask": "Build + Flash",
+            "servertype": "openocd",
+            "executable": "${command:cmake.launchTargetPath}",
+            "device": "STM32G474RETx",
+            "interface": "swd",
+            "runToEntryPoint": "main",
+            "serverpath": "openocd",
+            "gdbPath": "/usr/bin/gdb-multiarch",
+            "svdFile": "${config:STM32VSCodeExtension.cubeCLT.path}/STMicroelectronics_CMSIS_SVD/STM32G474.svd",
+            "configFiles": [
+                "interface/stlink.cfg",
+                "target/stm32g4x.cfg"
+            ],
+            "serverArgs": [
+                "-c",
+                "transport select hla_swd",
+                "-c",
+                "adapter speed 4000"
+            ]
+        },
+        {
+            "name": "Attach to Microcontroller - OpenOCD",
+            "cwd": "${workspaceFolder}",
+            "type": "cortex-debug",
+            "request": "attach",
+            "servertype": "openocd",
+            "executable": "${command:cmake.launchTargetPath}",
+            "device": "STM32G474RETx",
+            "interface": "swd",
+            "runToEntryPoint": "main",
+            "serverpath": "openocd",
+            "gdbPath": "/usr/bin/gdb-multiarch",
+            "svdFile": "${config:STM32VSCodeExtension.cubeCLT.path}/STMicroelectronics_CMSIS_SVD/STM32G474.svd",
+            "configFiles": [
+                "interface/stlink.cfg",
+                "target/stm32g4x.cfg"
+            ],
+            "serverArgs": [
+                "-c",
+                "transport select hla_swd",
+                "-c",
+                "adapter speed 4000"
+            ]
+        }
+    ]
+}

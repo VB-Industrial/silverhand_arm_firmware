@@ -1,0 +1,117 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "type": "shell",
+            "label": "Reset CMake cache",
+            "command": "cmake",
+            "args": [
+                "-E",
+                "rm",
+                "-f",
+                "build/RelWithDebInfo/CMakeCache.txt"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "problemMatcher": []
+        },
+        {
+            "type": "shell",
+            "label": "Reset CMake files",
+            "command": "cmake",
+            "args": [
+                "-E",
+                "rm",
+                "-rf",
+                "build/RelWithDebInfo/CMakeFiles"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "problemMatcher": []
+        },
+        {
+            "type": "shell",
+            "label": "Configure firmware",
+            "dependsOrder": "sequence",
+            "dependsOn": [
+                "Reset CMake cache",
+                "Reset CMake files"
+            ],
+            "command": "cmake",
+            "args": [
+                "--preset",
+                "RelWithDebInfo"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "problemMatcher": []
+        },
+        {
+            "type": "shell",
+            "label": "Build firmware",
+            "command": "cmake",
+            "args": [
+                "--build",
+                "--preset",
+                "RelWithDebInfo"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "group": "build",
+            "problemMatcher": []
+        },
+        {
+            "type": "shell",
+            "label": "OpenOCD: Flash project (SWD)",
+            "command": "sudo",
+            "args": [
+                "-n",
+                "${workspaceFolder}/scripts/flash_openocd.sh",
+                "${workspaceFolder}/build/RelWithDebInfo/silver_hand_firmware.elf"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "Build + Flash",
+            "dependsOrder": "sequence",
+            "dependsOn": [
+                "Configure firmware",
+                "Build firmware",
+                "OpenOCD: Flash project (SWD)"
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "problemMatcher": []
+        },
+        {
+            "type": "shell",
+            "label": "OpenOCD: Start server",
+            "command": "sudo",
+            "args": [
+                "-n",
+                "openocd",
+                "-f",
+                "interface/stlink.cfg",
+                "-f",
+                "target/stm32g4x.cfg",
+                "-c",
+                "transport select hla_swd",
+                "-c",
+                "adapter speed 4000"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "problemMatcher": []
+        }
+    ]
+}
