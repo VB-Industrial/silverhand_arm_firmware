@@ -1,0 +1,3 @@
+[submodule "Drivers/libcxxcanard"]
+	path = Drivers/libcxxcanard
+	url = https://github.com/VBCores/libcxxcanard.git
