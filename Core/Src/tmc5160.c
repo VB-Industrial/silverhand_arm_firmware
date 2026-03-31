@@ -129,28 +129,27 @@ void tmc5160_move(int32_t vel)
 	tmc5160_write(WData);
 }
 
-void tmc5160_set_default_vel()
+void tmc5160_apply_default_motion_profile()
 {
 	uint8_t WData[5] = {0};
 
-	tmc5160_velocity(DEFAULT_VELOCITY_IN_STEPS); //initial vel config
-
-	WData[0] = 0xA3; WData[1] = 0x00; WData[2] = 0x00; WData[3] = 0x00; WData[4] = 0x0A; // Start acceleration = 10 (Near start)
+	// Apply an intentionally aggressive default accel/decel profile.
+	WData[0] = 0xA3; WData[1] = 0x00; WData[2] = 0x03; WData[3] = 0xFF; WData[4] = 0xFF;
 	tmc5160_write(WData);
 
-	WData[0] = 0xA4; WData[1] = 0x00; WData[2] = 0x03; WData[3] = 0x0f; WData[4] = 0xff; // A1 = 10 000 First acceleration
+	WData[0] = 0xA4; WData[1] = 0x00; WData[2] = 0x00; WData[3] = 0xFF; WData[4] = 0xFF;
 	tmc5160_write(WData);
 
-	WData[0] = 0xA6; WData[1] = 0x00; WData[2] = 0x00; WData[3] = 0x0f; WData[4] = 0xff; // AMAX = 5 000 Acceleration above V1
+	WData[0] = 0xA6; WData[1] = 0x00; WData[2] = 0x00; WData[3] = 0xFF; WData[4] = 0xFF;
 	tmc5160_write(WData);
 
-	WData[0] = 0xA8; WData[1] = 0x00; WData[2] = 0x00; WData[3] = 0x0f; WData[4] = 0xff; // DMAX = 5 000 Deceleration above V1
+	WData[0] = 0xA8; WData[1] = 0x00; WData[2] = 0x00; WData[3] = 0xFF; WData[4] = 0xFF;
 	tmc5160_write(WData);
 
-	WData[0] = 0xAA; WData[1] = 0x00; WData[2] = 0x03; WData[3] = 0x0f; WData[4] = 0xff; // D1 = 10 000 Deceleration below V1
+	WData[0] = 0xAA; WData[1] = 0x00; WData[2] = 0x00; WData[3] = 0xFF; WData[4] = 0xFF;
 	tmc5160_write(WData);
 
-	WData[0] = 0xAB; WData[1] = 0x00; WData[2] = 0x00; WData[3] = 0x00; WData[4] = 0x0F; // VSTOP = 15 Stop velocity (Near to zero)
+	WData[0] = 0xAB; WData[1] = 0x00; WData[2] = 0x03; WData[3] = 0xFF; WData[4] = 0xFF;
 	tmc5160_write(WData);
 }
 
@@ -310,7 +309,7 @@ int32_t tmc5160_read_reg(uint8_t reg_addr)
 	return response;
 }
 
-void tmc5160_init(int8_t init_irun, int8_t direction)
+void tmc5160_init(int8_t init_irun)
 {
 	HAL_GPIO_WritePin(GPIOC, GPIO_PIN_5, GPIO_PIN_SET); // DRV_ENN: keep driver disabled during strap setup
 	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_11, GPIO_PIN_SET); // SPI_MODE ON
@@ -340,36 +339,13 @@ void tmc5160_init(int8_t init_irun, int8_t direction)
 	WData[0] = 0x80; WData[1] = 0x00; WData[2] = 0x00; WData[3] = 0x00; WData[4] = 0x04; // EN_PWM_MODE=1 enables StealthChop (with default PWMCONF)
 	tmc5160_write(WData);
 
-	tmc5160_velocity(DEFAULT_VELOCITY_IN_STEPS); //initial vel config
-
 	WData[0] = 0x93; WData[1] = 0x00; WData[2] = 0x00; WData[3] = 0x00; WData[4] = 0xC8; // TPWM_THRS=200 yields a switching velocity about 35000 = ca. 30RPM
 	tmc5160_write(WData);
 
-	WData[0] = 0xA0; WData[1] = 0x00; WData[2] = 0x00; WData[3] = 0x00; WData[4] = 0x00; //SPI send: 0xA000000000; // RAMPMODE = 0 (Target position move)
-	tmc5160_write(WData);
+	// WData[0] = 0xA0; WData[1] = 0x00; WData[2] = 0x00; WData[3] = 0x00; WData[4] = 0x00; //SPI send: 0xA000000000; // RAMPMODE = 0 (Target position move)
+	// tmc5160_write(WData);
 
-	WData[0] = 0xA3; WData[1] = 0x00; WData[2] = 0x00; WData[3] = 0x00; WData[4] = 0x0A; // Start acceleration = 10 (Near start)
-	tmc5160_write(WData);
-
-	WData[0] = 0xA4; WData[1] = 0x00; WData[2] = 0x03; WData[3] = 0xFF; WData[4] = 0xFF; // A1 = 10 000 First acceleration
-	tmc5160_write(WData);
-
-	WData[0] = 0xA6; WData[1] = 0x00; WData[2] = 0x00; WData[3] = 0xFF; WData[4] = 0xFF; // AMAX = 5 000 Acceleration above V1
-	tmc5160_write(WData);
-
-	WData[0] = 0xA8; WData[1] = 0x00; WData[2] = 0x00; WData[3] = 0xFF; WData[4] = 0xFF; // DMAX = 5 000 Deceleration above V1
-	tmc5160_write(WData);
-
-	WData[0] = 0xAA; WData[1] = 0x00; WData[2] = 0x03; WData[3] = 0xFF; WData[4] = 0xFF; // D1 = 10 000 Deceleration below V1
-	tmc5160_write(WData);
-
-	WData[0] = 0xAB; WData[1] = 0x00; WData[2] = 0x00; WData[3] = 0x00; WData[4] = 0x0F; // VSTOP = 15 Stop velocity (Near to zero)
-	tmc5160_write(WData);
-
-	WData[0] = 0xA0; WData[1] = 0x00; WData[2] = 0x00; WData[3] = 0x00; WData[4] = 0x03; // RAMPMODE = 3 (HOLD mode)
-	tmc5160_write(WData);
-
-	tmc5160_set_motor_direction(direction);
+	tmc5160_apply_default_motion_profile();
 
 	HAL_Delay(100);
 }

@@ -52,3 +52,18 @@ int32_t rad_to_steps(float rads, int32_t full_steps)
 	steps = (int32_t)((full_steps * rads)/(M_PI * 2));
 	return steps;
 }
+
+float wrap_angle_radians(float angle)
+{
+	const float two_pi = 2.0F * (float) M_PI;
+	float wrapped = fmodf(angle + (float) M_PI, two_pi);
+	if (wrapped < 0.0F) {
+		wrapped += two_pi;
+	}
+	return wrapped - (float) M_PI;
+}
+
+float angular_abs_diff_radians(float lhs, float rhs)
+{
+	return fabsf(wrap_angle_radians(lhs - rhs));
+}

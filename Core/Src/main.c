@@ -103,9 +103,17 @@ int main(void)
   cyphal_can_starter(&hfdcan1);
   setup_cyphal(&hfdcan1);
   HAL_Delay(10);
-  tmc5160_init(kRobotJointProfile->init_irun, kRobotJointProfile->direction);
+  tmc5160_init(kRobotJointProfile->init_irun);
+  tmc5160_set_zero();
   if (kRobotJointProfile->has_output_encoder) {
     as50_readAngle(&enc_angle, 100);
+    if (enc_angle == 0U) {
+      set_output_encoder_available(false);
+    } else {
+      set_output_encoder_available(true);
+    }
+  } else {
+    set_output_encoder_available(false);
   }
   fusion_startup_sync();
   HAL_Delay(10);
@@ -116,6 +124,7 @@ int main(void)
 
   uint32_t last_hbeat = HAL_GetTick();
   uint32_t last_js = HAL_GetTick();
+  uint32_t last_alert_tick = HAL_GetTick();
 
   while (1)
   {
@@ -124,10 +133,20 @@ int main(void)
           last_hbeat = now;
           heartbeat();
       }
-      if ( (now - last_js) >= 100) {
+      if ( (now - last_js) >= 50) {
     	  last_js = now;
-    	  send_JS();
     	  as50_readAngle(&enc_angle, 100);
+          if (output_encoder_available() && (enc_angle == 0U)) {
+              set_output_encoder_available(false);
+          }
+    	  send_JS();
+      }
+      if ( (now - last_alert_tick) >= 100) {
+          last_alert_tick = now;
+          alert_monitor_tick();
+          if (output_encoder_degraded()) {
+              HAL_GPIO_TogglePin(LED1_GPIO_Port, LED1_Pin);
+          }
       }
       cyphal_loop();
   }

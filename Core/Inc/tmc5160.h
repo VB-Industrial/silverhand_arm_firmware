@@ -22,10 +22,6 @@
 #define     _STEPPER_MOTOR_DRIVER_NSS_PIN GPIO_PIN_4
 #define nop() asm volatile("nop")
 
-#define DEFAULT_VELOCITY_IN_STEPS 20000
-
-
-
 #define BYTE(value, n)    (((value) >> ((n) << 3)) & 0xFF)
 
 /**
@@ -41,7 +37,7 @@
  *
  *
  */
-void tmc5160_init(int8_t init_irun, int8_t direction);
+void tmc5160_init(int8_t init_irun);
 
 /*Position in ticks
  *
@@ -60,7 +56,7 @@ int32_t tmc5160_position_read();
 
 void tmc5160_velocity(int32_t vel);
 
-void tmc5160_set_default_vel();
+void tmc5160_apply_default_motion_profile();
 
 int32_t tmc5160_velocity_read();
 

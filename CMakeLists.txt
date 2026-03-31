@@ -30,6 +30,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/cmake/stm32cubemx/CMakeLists.txt")
 endif()
 
 set(USER_SOURCES
+    Core/Src/alert_monitor.cpp
     Core/Src/communications.cpp
     Core/Src/as50xx.c
     Core/Src/at24_eeprom.c
