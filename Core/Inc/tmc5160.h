@@ -24,6 +24,31 @@
 
 #define BYTE(value, n)    (((value) >> ((n) << 3)) & 0xFF)
 
+#define TMC5160_REG_GCONF        0x80U
+#define TMC5160_REG_GSTAT        0x01U
+#define TMC5160_REG_IOIN         0x04U
+#define TMC5160_REG_TSTEP        0x12U
+#define TMC5160_REG_IHOLD_IRUN   0x90U
+#define TMC5160_REG_TPOWERDOWN   0x91U
+#define TMC5160_REG_TPWM_THRS    0x93U
+#define TMC5160_REG_RAMP_STAT    0x35U
+#define TMC5160_REG_RAMPMODE     0xA0U
+#define TMC5160_REG_XACTUAL      0xA1U
+#define TMC5160_REG_VACTUAL      0x22U
+#define TMC5160_REG_VSTART       0xA3U
+#define TMC5160_REG_A1           0xA4U
+#define TMC5160_REG_V1           0xA5U
+#define TMC5160_REG_AMAX         0xA6U
+#define TMC5160_REG_VMAX         0xA7U
+#define TMC5160_REG_DMAX         0xA8U
+#define TMC5160_REG_D1           0xAAU
+#define TMC5160_REG_VSTOP        0xABU
+#define TMC5160_REG_XTARGET      0xADU
+#define TMC5160_REG_XACTUAL_READ 0x21U
+#define TMC5160_REG_DRV_STATUS   0x6FU
+#define TMC5160_REG_CHOPCONF     0xECU
+#define TMC5160_REG_PWMCONF      0xF0U
+
 /**
   * @brief  Read driver register into given var
   * @param  given variable by ref

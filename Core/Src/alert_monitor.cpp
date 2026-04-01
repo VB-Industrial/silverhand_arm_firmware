@@ -3,6 +3,7 @@
 
 constexpr float kSlipThresholdRad = 10.0F * static_cast<float>(M_PI) / 180.0F;
 constexpr uint32_t kSlipRecoveryDurationMs = 3000U;
+constexpr bool kEnableSlipAutoResync = false;
 
 AlertMonitor::UpdateResult AlertMonitor::update(
     const uint32_t now_ms,
@@ -58,7 +59,9 @@ AlertMonitor::UpdateResult AlertMonitor::update_slip_mismatch(
         }
     }
 
-    if (!slip_fault_active_ && ((now_ms - mismatch_start_ts_ms_) >= kSlipRecoveryDurationMs)) {
+    if (kEnableSlipAutoResync &&
+        !slip_fault_active_ &&
+        ((now_ms - mismatch_start_ts_ms_) >= kSlipRecoveryDurationMs)) {
         slip_warning_level_ = 0;
         mismatch_active_ = false;
         mismatch_start_ts_ms_ = 0U;

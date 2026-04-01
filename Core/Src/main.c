@@ -29,7 +29,9 @@
 /* USER CODE BEGIN Includes */
 #include "as50xx.h"
 #include "communications.h"
+#include "motor.h"
 #include "robot_config.h"
+#include "tmc5160.h"
 
 /* USER CODE END Includes */
 
@@ -40,7 +42,6 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -61,7 +62,6 @@ void SystemClock_Config(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-uint16_t enc_angle = 0;
 /* USER CODE END 0 */
 
 /**
@@ -104,18 +104,7 @@ int main(void)
   setup_cyphal(&hfdcan1);
   HAL_Delay(10);
   tmc5160_init(kRobotJointProfile->init_irun);
-  tmc5160_set_zero();
-  if (kRobotJointProfile->has_output_encoder) {
-    as50_readAngle(&enc_angle, 100);
-    if (enc_angle == 0U) {
-      set_output_encoder_available(false);
-    } else {
-      set_output_encoder_available(true);
-    }
-  } else {
-    set_output_encoder_available(false);
-  }
-  fusion_startup_sync();
+  motor_init();
   HAL_Delay(10);
   /* USER CODE END 2 */
 
@@ -123,8 +112,8 @@ int main(void)
   /* USER CODE BEGIN WHILE */
 
   uint32_t last_hbeat = HAL_GetTick();
+  uint32_t last_motor_update = HAL_GetTick();
   uint32_t last_js = HAL_GetTick();
-  uint32_t last_alert_tick = HAL_GetTick();
 
   while (1)
   {
@@ -133,20 +122,13 @@ int main(void)
           last_hbeat = now;
           heartbeat();
       }
-      if ( (now - last_js) >= 50) {
-    	  last_js = now;
-    	  as50_readAngle(&enc_angle, 100);
-          if (output_encoder_available() && (enc_angle == 0U)) {
-              set_output_encoder_available(false);
-          }
-    	  send_JS();
+      if ( (now - last_motor_update) >= 20) {
+          last_motor_update = now;
+          motor_update(now);
       }
-      if ( (now - last_alert_tick) >= 100) {
-          last_alert_tick = now;
-          alert_monitor_tick();
-          if (output_encoder_degraded()) {
-              HAL_GPIO_TogglePin(LED1_GPIO_Port, LED1_Pin);
-          }
+      if ( (now - last_js) >= 50) {
+          last_js = now;
+          send_JS();
       }
       cyphal_loop();
   }
