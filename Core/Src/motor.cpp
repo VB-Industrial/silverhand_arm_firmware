@@ -18,6 +18,11 @@ namespace
 constexpr uint32_t kDegradedLedTogglePeriodMs = 100U;
 constexpr uint8_t kEncoderZeroStreakThreshold = 3U;
 constexpr uint8_t kEncoderValidStreakThreshold = 10U;
+constexpr float kVelocityZeroThresholdRadS = 0.0001F;
+constexpr float kLargePositionErrorThresholdRad = 5.0F * static_cast<float>(M_PI) / 180.0F;
+constexpr int32_t kDefaultPositionVelocitySteps = 10000;
+constexpr int32_t kFastPositionVelocitySteps = 10000;
+constexpr int32_t kFullThrottlePositionVelocitySteps = 30000;
 
 uint16_t g_encoder_angle_raw = 0U;
 uint32_t g_zero_enc_runtime = 0U;
@@ -269,15 +274,26 @@ extern "C" void motor_command(
         return;
     }
 
-    UNUSED(position_rad);
-    UNUSED(acceleration_rad_s2);
+    const int32_t target_position_steps = manipulator_radians_to_tmc_steps(position_rad);
+    const float position_error_rad =
+        angular_abs_diff_radians(position_rad, motor_fused_angle_manipulator());
 
-    // if (fabsf(velocity_rad_s) < 0.0001F) {
-    //     tmc5160_move(0);
-    //     return;
-    // }
-
-    tmc5160_move(rad_to_steps(velocity_rad_s, kRobotJointProfile->joint_full_steps));
+    if (acceleration_rad_s2 != 0.0F) {
+        tmc5160_move(rad_to_steps(acceleration_rad_s2, kRobotJointProfile->joint_full_steps));
+    } else if ((fabsf(velocity_rad_s) < kVelocityZeroThresholdRadS) && (velocity_rad_s != 0.0F)) {
+        tmc5160_velocity(kFastPositionVelocitySteps);
+        tmc5160_position(target_position_steps, kFastPositionVelocitySteps);
+    } else if (velocity_rad_s == 0.0F) {
+        const int32_t position_velocity_steps =
+            (position_error_rad > kLargePositionErrorThresholdRad)
+                ? kFastPositionVelocitySteps
+                : kFullThrottlePositionVelocitySteps;
+        tmc5160_acceleration(kRobotJointProfile->joint_full_steps);
+        tmc5160_velocity(position_velocity_steps);
+        tmc5160_position(target_position_steps, position_velocity_steps);
+    } else {
+        tmc5160_move(rad_to_steps(velocity_rad_s, kRobotJointProfile->joint_full_steps));
+    }
 }
 
 extern "C" void motor_move(const int32_t velocity_command)
@@ -295,7 +311,7 @@ extern "C" void motor_set_position_steps(const int32_t target_position_steps)
         return;
     }
     tmc5160_apply_default_motion_profile();
-    tmc5160_position(target_position_steps);
+    tmc5160_position(target_position_steps, kDefaultPositionVelocitySteps);
 }
 
 extern "C" void motor_arm(const bool armed)

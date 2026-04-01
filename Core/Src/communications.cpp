@@ -58,16 +58,10 @@ public:
     void handler(const reg_udral_physics_kinematics_rotation_Planar_0_1& js_in, CanardRxTransfer* transfer) override
     {
         UNUSED(transfer);
-        UNUSED(js_in.angular_position.radian);
-        UNUSED(js_in.angular_acceleration.radian_per_second_per_second);
-
-        const float velocity = js_in.angular_velocity.radian_per_second;
-        if ((velocity > -0.0001F) && (velocity < 0.0001F)) {
-            motor_move(0);
-            return;
-        }
-
-        motor_move(rad_to_steps(velocity, kRobotJointProfile->joint_full_steps));
+        motor_command(
+            js_in.angular_position.radian,
+            js_in.angular_velocity.radian_per_second,
+            js_in.angular_acceleration.radian_per_second_per_second);
     }
 };
 

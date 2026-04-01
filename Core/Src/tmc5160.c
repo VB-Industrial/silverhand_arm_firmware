@@ -211,9 +211,10 @@ static void tmc5160_set_tpwm_thrs(const uint32_t value)
 	tmc5160_write_reg32(TMC5160_REG_TPWM_THRS, value);
 }
 
-void tmc5160_position(int32_t position)
+void tmc5160_position(int32_t position, int32_t velocity)
 {
 	tmc5160_set_rampmode_position();
+	tmc5160_set_vmax(velocity);
 	tmc5160_set_xtarget(position);
 }
 
@@ -243,12 +244,12 @@ void tmc5160_move(int32_t vel)
 void tmc5160_apply_default_motion_profile()
 {
 	// Apply an intentionally aggressive default accel/decel profile.
-	tmc5160_set_vstart(0x0003FFFFU);
+	tmc5160_set_vstart(0x0000000AU);
 	tmc5160_set_a1(0x0000FFFFU);
 	tmc5160_set_amax(0x0000FFFFU);
 	tmc5160_set_dmax(0x0000FFFFU);
 	tmc5160_set_d1(0x0000FFFFU);
-	tmc5160_set_vstop(0x0003FFFFU);
+	tmc5160_set_vstop(0x0000000FU);
 }
 
 void tmc5160_velocity(int32_t vel)
@@ -421,7 +422,7 @@ void tmc5160_stop()
 	tmc5160_set_vmax(0U);
 
 	pos = tmc5160_position_read();
-	tmc5160_position((int32_t) pos);
+	tmc5160_position((int32_t) pos, 0);
 }
 
 
