@@ -62,6 +62,8 @@ target_compile_definitions(${CMAKE_PROJECT_NAME}
     PRIVATE
         $<$<BOOL:${SR_ARM_ENABLE_CYPHAL}>:SR_ARM_ENABLE_CYPHAL>
         $<$<BOOL:${SR_ARM_ENABLE_MOTOR_CONTROL}>:SR_ARM_ENABLE_MOTOR_CONTROL>
+        STM32G4
+        STM32G
 )
 
 target_compile_options(${CMAKE_PROJECT_NAME}
