@@ -21,7 +21,7 @@ constexpr uint8_t kEncoderValidStreakThreshold = 10U;
 constexpr float kVelocityZeroThresholdRadS = 0.0001F;
 constexpr float kLargePositionErrorThresholdRad = 5.0F * static_cast<float>(M_PI) / 180.0F;
 constexpr int32_t kDefaultPositionVelocitySteps = 10000;
-constexpr int32_t kFastPositionVelocitySteps = 10000;
+constexpr int32_t kFastPositionVelocitySteps = 30000;
 constexpr int32_t kFullThrottlePositionVelocitySteps = 30000;
 
 uint16_t g_encoder_angle_raw = 0U;
@@ -292,7 +292,8 @@ extern "C" void motor_command(
         tmc5160_velocity(position_velocity_steps);
         tmc5160_position(target_position_steps, position_velocity_steps);
     } else {
-        tmc5160_move(rad_to_steps(velocity_rad_s, kRobotJointProfile->joint_full_steps));
+        tmc5160_velocity(kFastPositionVelocitySteps);
+        tmc5160_position(target_position_steps, kFastPositionVelocitySteps);
     }
 }
 
