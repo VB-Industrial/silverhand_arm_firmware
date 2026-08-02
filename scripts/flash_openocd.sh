@@ -10,12 +10,6 @@ if ! command -v openocd >/dev/null 2>&1; then
     exit 1
 fi
 
-if [ "${EUID}" -ne 0 ]; then
-    echo "OpenOCD in WSL often needs root to access ST-Link over usbipd." >&2
-    echo "Run with sudo: sudo ./scripts/flash_openocd.sh" >&2
-    exit 1
-fi
-
 if [ ! -f "$ELF_PATH" ]; then
     echo "Firmware file not found: $ELF_PATH" >&2
     echo "Build first: cmake --preset RelWithDebInfo && cmake --build --preset RelWithDebInfo" >&2

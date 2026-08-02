@@ -3,6 +3,7 @@
         "ms-vscode.cpptools",
         "ms-vscode.cpptools-themes",
         "ms-vscode.cmake-tools",
+        "groobz.command-buttons",
         "twxs.cmake",
         "ms-vscode.cpptools-extension-pack",
         "dan-c-underwood.arm",

@@ -1,4 +1,34 @@
 {
+    "cmake.options.statusBarVisibility": "visible",
+    "cmake.options.advanced": {
+        "configure": {
+            "projectStatusVisibility": "visible"
+        },
+        "configurePreset": {
+            "statusBarVisibility": "visible"
+        },
+        "buildPreset": {
+            "statusBarVisibility": "visible"
+        },
+        "workflowPreset": {
+            "statusBarVisibility": "visible"
+        },
+        "launch": {
+            "statusBarVisibility": "visible"
+        },
+        "debug": {
+            "statusBarVisibility": "visible"
+        },
+        "kit": {
+            "statusBarVisibility": "visible"
+        },
+        "variant": {
+            "statusBarVisibility": "visible"
+        },
+        "folder": {
+            "statusBarVisibility": "visible"
+        }
+    },
     "cmake.useCMakePresets": "always",
     "cmake.configureOnOpen": true,
     "cmake.sourceDirectory": "${workspaceFolder}",

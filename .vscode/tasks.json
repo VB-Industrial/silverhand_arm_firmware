@@ -67,10 +67,8 @@
         {
             "type": "shell",
             "label": "OpenOCD: Flash project (SWD)",
-            "command": "sudo",
+            "command": "${workspaceFolder}/scripts/flash_openocd.sh",
             "args": [
-                "-n",
-                "${workspaceFolder}/scripts/flash_openocd.sh",
                 "${workspaceFolder}/build/RelWithDebInfo/silver_hand_firmware.elf"
             ],
             "options": {
@@ -95,10 +93,8 @@
         {
             "type": "shell",
             "label": "OpenOCD: Start server",
-            "command": "sudo",
+            "command": "openocd",
             "args": [
-                "-n",
-                "openocd",
                 "-f",
                 "interface/stlink.cfg",
                 "-f",

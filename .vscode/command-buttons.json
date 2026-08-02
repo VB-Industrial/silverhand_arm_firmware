@@ -1,0 +1,28 @@
+{
+    "buttons": [
+        {
+            "id": "build-firmware",
+            "label": "$(tools) Build",
+            "task": "Build firmware",
+            "tooltip": "Build firmware",
+            "alignment": "left",
+            "priority": 102
+        },
+        {
+            "id": "flash-firmware",
+            "label": "$(zap) Flash",
+            "task": "OpenOCD: Flash project (SWD)",
+            "tooltip": "Flash firmware via OpenOCD",
+            "alignment": "left",
+            "priority": 101
+        },
+        {
+            "id": "build-flash-firmware",
+            "label": "$(rocket) Build + Flash",
+            "task": "Build + Flash",
+            "tooltip": "Configure, build and flash firmware",
+            "alignment": "left",
+            "priority": 100
+        }
+    ]
+}
