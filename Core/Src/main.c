@@ -103,7 +103,6 @@ int main(void)
   cyphal_can_starter(&hfdcan1);
   setup_cyphal(&hfdcan1);
   HAL_Delay(10);
-  tmc5160_init(kRobotJointProfile->init_irun);
   motor_init();
   HAL_Delay(10);
   /* USER CODE END 2 */

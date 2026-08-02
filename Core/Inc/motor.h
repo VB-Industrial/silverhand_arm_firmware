@@ -14,7 +14,10 @@ void motor_update(uint32_t now_ms);
 void motor_command(float position_rad, float velocity_rad_s, float acceleration_rad_s2);
 void motor_move(int32_t velocity_command);
 void motor_set_position_steps(int32_t target_position_steps);
-void motor_arm(bool armed);
+bool motor_arm(bool armed);
+bool motor_driver_enabled(void);
+int32_t motor_driver_state(void);
+int32_t motor_driver_error(void);
 
 int32_t motor_position_steps(void);
 int32_t motor_velocity_steps(void);

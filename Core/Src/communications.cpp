@@ -67,7 +67,7 @@ public:
 
 JSReader* js_reader;
 NodeInfoReader* nireader;
-static constexpr size_t NUMBER_OF_REGISTERS = 7;
+static constexpr size_t NUMBER_OF_REGISTERS = 9;
 
 RegistersHandler<NUMBER_OF_REGISTERS>* registers_handler;
 
@@ -199,14 +199,36 @@ void arm_handler(
     uavcan_register_Value_1_0& v_out,
     RegisterAccessResponse::Type& response
 ) {
-    int32_t arm_command = 0;
+    int32_t arm_command = motor_driver_enabled() ? 1 : 0;
     if (try_get_register_int32(v_in, arm_command)) {
         motor_arm(arm_command != 0);
         HAL_GPIO_TogglePin(GPIOD, GPIO_PIN_2);
     }
-    set_register_int32(v_out, arm_command);
+    set_register_int32(v_out, motor_driver_enabled() ? 1 : 0);
     response.persistent = true;
     response._mutable = true;
+}
+
+void tmc_state_handler(
+    const uavcan_register_Value_1_0&,
+    uavcan_register_Value_1_0& v_out,
+    RegisterAccessResponse::Type& response
+) {
+    // Refresh the IOIN-backed enable state before returning the state-machine value.
+    motor_driver_enabled();
+    set_register_int32(v_out, motor_driver_state());
+    response.persistent = false;
+    response._mutable = false;
+}
+
+void tmc_error_handler(
+    const uavcan_register_Value_1_0&,
+    uavcan_register_Value_1_0& v_out,
+    RegisterAccessResponse::Type& response
+) {
+    set_register_int32(v_out, motor_driver_error());
+    response.persistent = false;
+    response._mutable = false;
 }
 
 void fail_ack_handler(
@@ -269,6 +291,8 @@ void setup_cyphal(FDCAN_HandleTypeDef* handler) {
             RegisterDefinition{"pos_get", pos_get_handler},
             RegisterDefinition{"enc_get", enc_get_handler},
             RegisterDefinition{"arm", arm_handler},
+            RegisterDefinition{"tmc_state", tmc_state_handler},
+            RegisterDefinition{"tmc_error", tmc_error_handler},
             RegisterDefinition{"fus_get", fus_get_handler},
             RegisterDefinition{"fail_ack", fail_ack_handler},
         },

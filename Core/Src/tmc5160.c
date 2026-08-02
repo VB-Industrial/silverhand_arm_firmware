@@ -95,11 +95,9 @@ static void tmc5160_configure_pins_for_spi_mode(void)
 	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8, GPIO_PIN_RESET); // STEP
 }
 
-static void tmc5160_enable_driver_after_strap(void)
+static void tmc5160_prepare_driver_after_strap(void)
 {
 	HAL_Delay(10);
-	HAL_GPIO_WritePin(GPIOC, GPIO_PIN_5, GPIO_PIN_RESET);
-	HAL_Delay(100);
 }
 
 static void tmc5160_set_rampmode_position(void)
@@ -362,10 +360,45 @@ int32_t tmc5160_read_reg(uint8_t reg_addr)
 	return response;
 }
 
+void tmc5160_clear_gstat(uint32_t flags)
+{
+	tmc5160_write_reg32(TMC5160_REG_GSTAT | 0x80U, flags & 0x7U);
+}
+
+bool tmc5160_communication_ok(void)
+{
+	const uint32_t ioin = (uint32_t)tmc5160_read_reg(TMC5160_REG_IOIN);
+	return (ioin & 0xFF000000U) == 0x30000000U;
+}
+
+bool tmc5160_driver_enabled_readback(void)
+{
+	const uint32_t ioin = (uint32_t)tmc5160_read_reg(TMC5160_REG_IOIN);
+	return (ioin & (1UL << 4U)) == 0U;
+}
+
+bool tmc5160_configuration_matches(void)
+{
+	return (((uint32_t)tmc5160_read_reg(TMC5160_REG_GCONF) & 0x1FFFFU) == 0x00000004U) &&
+	       ((uint32_t)tmc5160_read_reg(TMC5160_REG_CHOPCONF) == 0x000000C3U) &&
+	       (((uint32_t)tmc5160_read_reg(TMC5160_REG_RAMPMODE) & 0x3U) == 0U);
+}
+
+bool tmc5160_has_critical_fault(void)
+{
+	const uint32_t gstat = (uint32_t)tmc5160_read_reg(TMC5160_REG_GSTAT);
+	const uint32_t driver_status = (uint32_t)tmc5160_read_reg(TMC5160_REG_DRV_STATUS);
+	const uint32_t gstat_critical = (1UL << 1U) | (1UL << 2U);
+	const uint32_t driver_critical =
+		(1UL << 28U) | (1UL << 27U) | (1UL << 25U) | (1UL << 13U) | (1UL << 12U);
+
+	return ((gstat & gstat_critical) != 0U) || ((driver_status & driver_critical) != 0U);
+}
+
 void tmc5160_init(int8_t init_irun)
 {
 	tmc5160_configure_pins_for_spi_mode();
-	tmc5160_enable_driver_after_strap();
+	tmc5160_prepare_driver_after_strap();
 
 	tmc5160_set_chopconf_spreadcycle_default();
 	tmc5160_set_current_levels((uint8_t) init_irun, (uint8_t) init_irun, 0U);
@@ -382,7 +415,7 @@ void tmc5160_init(int8_t init_irun)
 
 	tmc5160_apply_default_motion_profile();
 
-	HAL_Delay(100);
+	HAL_Delay(10);
 }
 
 

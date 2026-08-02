@@ -6,6 +6,7 @@
 #include <cmath>
 
 #include "alert_monitor.h"
+#include "tmc5160_state.hpp"
 
 extern "C" {
 #include "as50xx.h"
@@ -39,6 +40,7 @@ bool g_output_encoder_available = false;
 bool g_output_encoder_degraded = false;
 
 AlertMonitor g_alert_monitor;
+Tmc5160StateMachine g_tmc_driver;
 
 float manipulator_to_native_radians(const float manipulator_angle_rad)
 {
@@ -234,6 +236,8 @@ extern "C" void motor_init(void)
 {
     const uint32_t now_ms = HAL_GetTick();
 
+    g_tmc_driver.initialize(static_cast<uint8_t>(kRobotJointProfile->init_irun));
+
     g_zero_enc_runtime = kRobotJointProfile->default_zero_enc;
 
     if (kRobotJointProfile->has_output_encoder) {
@@ -253,6 +257,8 @@ extern "C" void motor_init(void)
 
 extern "C" void motor_update(const uint32_t now_ms)
 {
+    g_tmc_driver.update(now_ms);
+
     if (kRobotJointProfile->has_output_encoder) {
         as50_readAngle(&g_encoder_angle_raw, 100);
     } else {
@@ -270,7 +276,7 @@ extern "C" void motor_command(
     const float velocity_rad_s,
     const float acceleration_rad_s2)
 {
-    if (!g_alert_monitor.motion_allowed()) {
+    if (!g_alert_monitor.motion_allowed() || !g_tmc_driver.is_enabled()) {
         return;
     }
 
@@ -299,29 +305,46 @@ extern "C" void motor_command(
 
 extern "C" void motor_move(const int32_t velocity_command)
 {
-    if (!g_alert_monitor.motion_allowed()) {
+    if (!g_alert_monitor.motion_allowed() || !g_tmc_driver.is_enabled()) {
         return;
     }
-    tmc5160_arm();
     tmc5160_move(velocity_command);
 }
 
 extern "C" void motor_set_position_steps(const int32_t target_position_steps)
 {
-    if (!g_alert_monitor.motion_allowed()) {
+    if (!g_alert_monitor.motion_allowed() || !g_tmc_driver.is_enabled()) {
         return;
     }
     tmc5160_apply_default_motion_profile();
     tmc5160_position(target_position_steps, kDefaultPositionVelocitySteps);
 }
 
-extern "C" void motor_arm(const bool armed)
+extern "C" bool motor_arm(const bool armed)
 {
     if (armed) {
-        tmc5160_arm();
-    } else {
-        tmc5160_disarm();
+        const bool enabled = g_tmc_driver.enable();
+        if (enabled) {
+            sync_tmc_offset_to_encoder();
+        }
+        return enabled;
     }
+    return g_tmc_driver.disable();
+}
+
+extern "C" bool motor_driver_enabled(void)
+{
+    return g_tmc_driver.is_enabled();
+}
+
+extern "C" int32_t motor_driver_state(void)
+{
+    return static_cast<int32_t>(g_tmc_driver.state());
+}
+
+extern "C" int32_t motor_driver_error(void)
+{
+    return static_cast<int32_t>(g_tmc_driver.error());
 }
 
 extern "C" int32_t motor_position_steps(void)

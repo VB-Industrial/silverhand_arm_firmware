@@ -87,6 +87,16 @@ int32_t tmc5160_velocity_read();
 
 int32_t tmc5160_read_reg(uint8_t reg_addr);
 
+void tmc5160_clear_gstat(uint32_t flags);
+
+bool tmc5160_communication_ok(void);
+
+bool tmc5160_driver_enabled_readback(void);
+
+bool tmc5160_configuration_matches(void);
+
+bool tmc5160_has_critical_fault(void);
+
 void tmc5160_effort(double effort, float max_effort, int8_t max_irun_scaler, int8_t init_irun);
 
 void tmc5160_set_motor_direction(int8_t);

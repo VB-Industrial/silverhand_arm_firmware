@@ -33,6 +33,7 @@ set(USER_SOURCES
     Core/Src/alert_monitor.cpp
     Core/Src/communications.cpp
     Core/Src/motor.cpp
+    Core/Src/tmc5160_state.cpp
     Core/Src/as50xx.c
     Core/Src/at24_eeprom.c
     Core/Src/tmc5160.c
