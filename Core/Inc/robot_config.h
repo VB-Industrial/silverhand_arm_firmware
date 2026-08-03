@@ -11,6 +11,8 @@ extern "C" {
 
 static const uint8_t SR_JOINT_INDEX = 2U;
 
+static const bool SR_ENABLE_FUSION_OFFSET_FAULT = true;
+
 typedef struct robot_joint_profile {
     uint8_t joint_index;
     uint8_t node_id;
@@ -58,7 +60,7 @@ static const robot_joint_profile kRobotJointProfiles[] = {
     {3U, 23U, 100U, 1123U, 1133U, 1001U, 7509U, 17U, 3.9F, 12, 5, 1, 2560000U, 50.0F, 1.0F, 6769U, 0.8F, 0.2F, 0.95F, 0.05F, 0.1F, true, true, 0},
     {4U, 24U, 100U, 1124U, 1134U, 1001U, 7509U, 11U, 0.3F, 5, 1, -1, 2048000U, 19.203208F, 2.5F, 0U, 0.8F, 0.2F, 0.95F, 0.05F, 0.1F, true, true, 0},
     {5U, 25U, 100U, 1125U, 1135U, 1001U, 7509U, 14U, 0.5F, 8, 3, -1, 512000U, 19.203208F, 2.5F, 0U, 0.8F, 0.2F, 0.95F, 0.05F, 0.1F, true, true, 0},
-    {6U, 26U, 100U, 1126U, 1136U, 1001U, 7509U, 14U, 0.5F, 8, 3, 1, 983204U, 19.203208F, 1.0F, 0U, 0.8F, 0.2F, 0.95F, 0.05F, 0.1F, true, true, 1},
+    {6U, 26U, 100U, 1126U, 1136U, 1001U, 7509U, 14U, 0.5F, 8, 5, 1, 983204U, 19.203208F, 1.0F, 0U, 0.8F, 0.2F, 0.95F, 0.05F, 0.1F, true, true, 1},
 };
 static const robot_joint_profile* const kRobotJointProfile = &kRobotJointProfiles[SR_JOINT_INDEX - 1U];
 

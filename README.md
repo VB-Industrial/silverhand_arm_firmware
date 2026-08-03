@@ -371,7 +371,7 @@ infer a full backlash transition from a velocity reversal. Stored
 offset range in `fusion_diag`, but is not added to the position unconditionally.
 
 During normal control, firmware checks the absolute floating offset against
-`max(5 degrees, 1.5 * measured_backlash + 2 degrees)`. An excess must persist
+`max(30 degrees, 1.5 * measured_backlash + 2 degrees)`. An excess must persist
 for 500 ms before fault bit 0 is session-latched. The response is stop and
 HOLD, without disarming the driver and without writing the event to EEPROM.
 Normal and calibration motion commands are rejected until a controller reset or

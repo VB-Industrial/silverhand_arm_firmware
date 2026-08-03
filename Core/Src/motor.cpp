@@ -378,6 +378,7 @@ void update_faults(const uint32_t now_ms)
 {
     const Tmc5160Error tmc_error = g_tmc_driver.error();
     const bool fusion_offset_available =
+        SR_ENABLE_FUSION_OFFSET_FAULT &&
         g_output_encoder_available &&
         g_fusion_uses_calibrated_encoder &&
         !g_encoder_calibration.blocks_normal_control() &&
