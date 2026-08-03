@@ -3,6 +3,7 @@
 #include "main.h"
 #include "robot_config.h"
 
+#include <algorithm>
 #include <cmath>
 
 #include "encoder_calibration.hpp"
@@ -20,6 +21,7 @@ namespace
 constexpr uint32_t kDegradedLedTogglePeriodMs = 100U;
 constexpr uint8_t kEncoderErrorStreakThreshold = 3U;
 constexpr uint8_t kEncoderValidStreakThreshold = 10U;
+constexpr float kFusionEncoderCorridorTicks = 2.0F;
 constexpr float kVelocityZeroThresholdRadS = 0.0001F;
 constexpr float kLargePositionErrorThresholdRad = 5.0F * static_cast<float>(M_PI) / 180.0F;
 constexpr int32_t kDefaultPositionVelocitySteps = 10000;
@@ -29,18 +31,24 @@ constexpr uint32_t kServiceStopTimeoutMs = 250U;
 
 uint16_t g_encoder_angle_raw = 0U;
 uint32_t g_zero_enc_runtime = 0U;
-uint16_t g_prev_enc_angle = 0U;
 uint32_t g_prev_fusion_ts_ms = 0U;
 uint32_t g_last_degraded_led_toggle_ms = 0U;
 uint8_t g_encoder_error_streak = 0U;
 uint8_t g_encoder_valid_streak = 0U;
-float g_enc_velocity_lpf_rad_s = 0.0F;
 float g_fused_angle_rad = 0.0F;
 float g_fused_velocity_rad_s = 0.0F;
 float g_startup_tmc_angle_offset_rad = 0.0F;
+float g_fusion_encoder_angle_rad = 0.0F;
+float g_fusion_tmc_angle_rad = 0.0F;
+float g_fusion_offset_rad = 0.0F;
+float g_fusion_encoder_error_rad = 0.0F;
+float g_fusion_backlash_rad = 0.0F;
+int32_t g_prev_fusion_tmc_steps = 0;
 bool g_output_encoder_available = false;
 bool g_output_encoder_degraded = false;
 bool g_encoder_last_read_ok = false;
+bool g_fusion_initialized = false;
+bool g_fusion_uses_calibrated_encoder = false;
 motor_control_mode g_control_mode = MOTOR_CONTROL_MODE_HOLD;
 
 FaultManager g_fault_manager;
@@ -62,7 +70,7 @@ int32_t apply_output_encoder_direction(const int32_t ticks)
     return (kRobotJointProfile->output_encoder_inverted != 0) ? -ticks : ticks;
 }
 
-float encoder_fused_angle_radians(void)
+float raw_encoder_angle_radians(void)
 {
     constexpr int32_t kEncoderTicksPerTurn = _ENCODER_READMASK + 1;
     constexpr int32_t kHalfTurnTicks = kEncoderTicksPerTurn / 2;
@@ -79,6 +87,24 @@ float encoder_fused_angle_radians(void)
     return static_cast<float>(delta_ticks) * radians_per_tick;
 }
 
+float encoder_angle_radians(bool* const calibrated = nullptr)
+{
+    int32_t calibrated_ticks = 0;
+    const bool calibration_applied =
+        g_encoder_calibration.calibrated_position_ticks(g_encoder_angle_raw, calibrated_ticks);
+    if (calibrated != nullptr) {
+        *calibrated = calibration_applied;
+    }
+    if (!calibration_applied) {
+        return raw_encoder_angle_radians();
+    }
+
+    calibrated_ticks = apply_output_encoder_direction(calibrated_ticks);
+    constexpr float kRadiansPerEncoderTick =
+        (2.0F * static_cast<float>(M_PI)) / static_cast<float>(_ENCODER_READMASK + 1);
+    return static_cast<float>(calibrated_ticks) * kRadiansPerEncoderTick;
+}
+
 float tmc_angle_radians(void)
 {
     return steps_to_rads(tmc5160_position_read(), kRobotJointProfile->joint_full_steps);
@@ -89,26 +115,55 @@ float tmc_corrected_angle_radians(void)
     return tmc_angle_radians() + g_startup_tmc_angle_offset_rad;
 }
 
-float tmc_velocity_radians_per_second(void)
+float tmc_delta_output_radians(const int32_t delta_steps)
 {
-    return steps_to_rads(tmc5160_velocity_read(), kRobotJointProfile->joint_full_steps);
+    const encoder_calibration_data& calibration = g_encoder_calibration.data();
+    if (g_encoder_calibration.has_stored_data() &&
+        (calibration.tmc_span_steps != 0) &&
+        (calibration.manual_span_ticks != 0)) {
+        const int32_t direction = (calibration.manual_span_ticks > 0) ? 1 : -1;
+        const int32_t calibrated_span_ticks = calibration.manual_span_ticks -
+            (2 * direction * static_cast<int32_t>(calibration.safe_margin_ticks));
+        const float raw_delta_ticks =
+            (static_cast<float>(delta_steps) * static_cast<float>(calibrated_span_ticks)) /
+            static_cast<float>(calibration.tmc_span_steps);
+        constexpr float kRadiansPerEncoderTick =
+            (2.0F * static_cast<float>(M_PI)) / static_cast<float>(_ENCODER_READMASK + 1);
+        return static_cast<float>(apply_output_encoder_direction(1)) *
+               raw_delta_ticks * kRadiansPerEncoderTick;
+    }
+    return steps_to_rads(delta_steps, kRobotJointProfile->joint_full_steps);
+}
+
+float calibrated_backlash_radians(void)
+{
+    const int32_t backlash_steps = std::max<int32_t>(g_encoder_calibration.data().backlash_steps, 0);
+    return std::fabs(tmc_delta_output_radians(backlash_steps));
 }
 
 void sync_tmc_offset_to_encoder(void)
 {
     g_startup_tmc_angle_offset_rad = 0.0F;
     if (g_output_encoder_available) {
-        g_startup_tmc_angle_offset_rad = encoder_fused_angle_radians() - tmc_angle_radians();
+        g_startup_tmc_angle_offset_rad = encoder_angle_radians() - tmc_angle_radians();
     }
 }
 
 void reset_fusion_tracking(const uint32_t now_ms)
 {
-    g_prev_enc_angle = g_encoder_angle_raw;
+    const int32_t tmc_steps = tmc5160_position_read();
+    g_prev_fusion_tmc_steps = tmc_steps;
     g_prev_fusion_ts_ms = now_ms;
-    g_enc_velocity_lpf_rad_s = 0.0F;
-    g_fused_angle_rad = tmc_corrected_angle_radians();
+    g_fusion_encoder_angle_rad = encoder_angle_radians(&g_fusion_uses_calibrated_encoder);
+    g_fusion_tmc_angle_rad = g_output_encoder_available
+        ? g_fusion_encoder_angle_rad
+        : tmc_corrected_angle_radians();
+    g_fused_angle_rad = g_fusion_tmc_angle_rad;
+    g_fusion_offset_rad = g_fused_angle_rad - g_fusion_tmc_angle_rad;
+    g_fusion_encoder_error_rad = 0.0F;
+    g_fusion_backlash_rad = calibrated_backlash_radians();
     g_fused_velocity_rad_s = 0.0F;
+    g_fusion_initialized = true;
 }
 
 void set_output_encoder_available(const bool available, const uint32_t now_ms)
@@ -125,55 +180,45 @@ void set_output_encoder_available(const bool available, const uint32_t now_ms)
 
 void update_fusion_state(const uint32_t now_ms)
 {
-    const float tmc_angle = tmc_corrected_angle_radians();
-    const float tmc_velocity = tmc_velocity_radians_per_second();
-
-    if (!g_output_encoder_available) {
-        g_fused_angle_rad = tmc_angle;
-        g_fused_velocity_rad_s = tmc_velocity;
-        g_prev_enc_angle = g_encoder_angle_raw;
-        g_prev_fusion_ts_ms = now_ms;
-        g_enc_velocity_lpf_rad_s = 0.0F;
+    if (!g_fusion_initialized) {
+        reset_fusion_tracking(now_ms);
         return;
     }
 
-    const float encoder_angle = encoder_fused_angle_radians();
-    g_fused_angle_rad = (kRobotJointProfile->angle_encoder_weight * encoder_angle) +
-                        (kRobotJointProfile->angle_tmc_weight * tmc_angle);
+    const int32_t tmc_steps = tmc5160_position_read();
+    const int32_t delta_tmc_steps = static_cast<int32_t>(
+        static_cast<uint32_t>(tmc_steps) - static_cast<uint32_t>(g_prev_fusion_tmc_steps));
+    const float delta_tmc_rad = tmc_delta_output_radians(delta_tmc_steps);
+    const float previous_fused_angle = g_fused_angle_rad;
+    float predicted_angle = previous_fused_angle + delta_tmc_rad;
 
-    if (g_prev_fusion_ts_ms == 0U) {
-        g_prev_enc_angle = g_encoder_angle_raw;
-        g_prev_fusion_ts_ms = now_ms;
-        g_fused_velocity_rad_s = tmc_velocity;
-        return;
+    g_fusion_tmc_angle_rad += delta_tmc_rad;
+    g_fusion_encoder_angle_rad = encoder_angle_radians(&g_fusion_uses_calibrated_encoder);
+    g_fusion_encoder_error_rad = 0.0F;
+    if (g_output_encoder_available) {
+        constexpr float kRadiansPerEncoderTick =
+            (2.0F * static_cast<float>(M_PI)) / static_cast<float>(_ENCODER_READMASK + 1);
+        constexpr float kEncoderCorridorRad = kFusionEncoderCorridorTicks * kRadiansPerEncoderTick;
+        const float prediction_error = g_fusion_encoder_angle_rad - predicted_angle;
+        if (std::fabs(prediction_error) > kEncoderCorridorRad) {
+            predicted_angle += prediction_error - std::copysign(kEncoderCorridorRad, prediction_error);
+        }
+        g_fusion_encoder_error_rad = g_fusion_encoder_angle_rad - predicted_angle;
     }
+
+    g_fused_angle_rad = predicted_angle;
+    g_fusion_offset_rad = g_fused_angle_rad - g_fusion_tmc_angle_rad;
+    g_fusion_backlash_rad = calibrated_backlash_radians();
 
     const uint32_t dt_ms = now_ms - g_prev_fusion_ts_ms;
-    if (dt_ms == 0U) {
-        g_fused_velocity_rad_s = tmc_velocity;
-        return;
+    if (dt_ms > 0U) {
+        const float measured_velocity =
+            (g_fused_angle_rad - previous_fused_angle) / (static_cast<float>(dt_ms) / 1000.0F);
+        const float alpha = kRobotJointProfile->velocity_encoder_lpf_alpha;
+        g_fused_velocity_rad_s = (alpha * measured_velocity) +
+                                 ((1.0F - alpha) * g_fused_velocity_rad_s);
     }
-
-    constexpr int32_t kEncoderTicksPerTurn = _ENCODER_READMASK + 1;
-    constexpr int32_t kHalfTurnTicks = kEncoderTicksPerTurn / 2;
-    int32_t delta_ticks = static_cast<int32_t>(g_encoder_angle_raw) - static_cast<int32_t>(g_prev_enc_angle);
-    if (delta_ticks > kHalfTurnTicks) {
-        delta_ticks -= kEncoderTicksPerTurn;
-    } else if (delta_ticks < -kHalfTurnTicks) {
-        delta_ticks += kEncoderTicksPerTurn;
-    }
-    delta_ticks = apply_output_encoder_direction(delta_ticks);
-
-    const float dt_s = static_cast<float>(dt_ms) / 1000.0F;
-    const float radians_per_tick = (2.0F * static_cast<float>(M_PI)) / static_cast<float>(kEncoderTicksPerTurn);
-    const float enc_velocity_raw = (static_cast<float>(delta_ticks) * radians_per_tick) / dt_s;
-    const float lpf_alpha = kRobotJointProfile->velocity_encoder_lpf_alpha;
-    g_enc_velocity_lpf_rad_s = (lpf_alpha * enc_velocity_raw) + ((1.0F - lpf_alpha) * g_enc_velocity_lpf_rad_s);
-
-    g_fused_velocity_rad_s = (kRobotJointProfile->velocity_tmc_weight * tmc_velocity) +
-                             (kRobotJointProfile->velocity_encoder_weight * g_enc_velocity_lpf_rad_s);
-
-    g_prev_enc_angle = g_encoder_angle_raw;
+    g_prev_fusion_tmc_steps = tmc_steps;
     g_prev_fusion_ts_ms = now_ms;
 }
 
@@ -221,7 +266,7 @@ void update_faults(const uint32_t now_ms)
     const FaultManager::UpdateResult result = g_fault_manager.update(
         now_ms,
         g_output_encoder_available,
-        encoder_fused_angle_radians(),
+        encoder_angle_radians(),
         tmc_corrected_angle_radians(),
         g_tmc_driver.error(),
         g_tmc_driver.fault_snapshot());
@@ -261,6 +306,8 @@ void update_calibration(const uint32_t now_ms)
         tmc5160_position_read());
     if (action.zero_tmc_position) {
         tmc5160_set_zero();
+        sync_tmc_offset_to_encoder();
+        reset_fusion_tracking(now_ms);
     }
     if (action.command_velocity) {
         tmc5160_move(action.velocity_steps);
@@ -447,6 +494,7 @@ extern "C" bool motor_arm(const bool armed)
         const bool enabled = g_tmc_driver.enable();
         if (enabled) {
             sync_tmc_offset_to_encoder();
+            reset_fusion_tracking(HAL_GetTick());
             g_control_mode = MOTOR_CONTROL_MODE_HOLD;
         }
         return enabled;
@@ -514,6 +562,21 @@ extern "C" bool motor_encoder_get_diagnostics(motor_encoder_diagnostics* const d
     diagnostics->last_hal_status = static_cast<int32_t>(encoder_diagnostics.last_hal_status);
     diagnostics->last_read_ok = encoder_diagnostics.last_read_ok;
     diagnostics->has_valid_angle = encoder_diagnostics.has_valid_angle;
+    return true;
+}
+
+extern "C" bool motor_fusion_get_diagnostics(motor_fusion_diagnostics* const diagnostics)
+{
+    if (diagnostics == nullptr) {
+        return false;
+    }
+    diagnostics->encoder_angle_rad = native_to_manipulator_radians(g_fusion_encoder_angle_rad);
+    diagnostics->tmc_angle_rad = native_to_manipulator_radians(g_fusion_tmc_angle_rad);
+    diagnostics->offset_rad = native_to_manipulator_radians(g_fusion_offset_rad);
+    diagnostics->fused_angle_rad = native_to_manipulator_radians(g_fused_angle_rad);
+    diagnostics->encoder_error_rad = native_to_manipulator_radians(g_fusion_encoder_error_rad);
+    diagnostics->backlash_rad = g_fusion_backlash_rad;
+    diagnostics->calibrated_encoder = g_fusion_uses_calibrated_encoder;
     return true;
 }
 
@@ -701,6 +764,7 @@ extern "C" bool motor_ack_fail(void)
     const bool sync_offset = g_fault_manager.acknowledge();
     if (sync_offset) {
         sync_tmc_offset_to_encoder();
+        reset_fusion_tracking(HAL_GetTick());
     }
     return true;
 }

@@ -19,6 +19,16 @@ typedef struct motor_encoder_diagnostics {
     bool has_valid_angle;
 } motor_encoder_diagnostics;
 
+typedef struct motor_fusion_diagnostics {
+    float encoder_angle_rad;
+    float tmc_angle_rad;
+    float offset_rad;
+    float fused_angle_rad;
+    float encoder_error_rad;
+    float backlash_rad;
+    bool calibrated_encoder;
+} motor_fusion_diagnostics;
+
 typedef enum motor_control_mode {
     MOTOR_CONTROL_MODE_HOLD = 0,
     MOTOR_CONTROL_MODE_SERVO = 1,
@@ -44,6 +54,7 @@ int32_t motor_position_steps(void);
 int32_t motor_velocity_steps(void);
 uint16_t motor_encoder_raw(void);
 bool motor_encoder_get_diagnostics(motor_encoder_diagnostics* diagnostics);
+bool motor_fusion_get_diagnostics(motor_fusion_diagnostics* diagnostics);
 
 bool motor_calibration_command(int32_t command);
 bool motor_auto_calibration_start(void);

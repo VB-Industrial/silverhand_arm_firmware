@@ -535,8 +535,17 @@ bool EncoderCalibration::process_table()
 
 int32_t EncoderCalibration::corrected_position_ticks(const int32_t position_ticks) const
 {
-    const int64_t span = std::abs(static_cast<int64_t>(safe_end_ticks_) - safe_start_ticks_);
-    const int64_t distance = std::abs(static_cast<int64_t>(position_ticks) - safe_start_ticks_);
+    const int32_t direction = (data_.manual_span_ticks >= 0) ? 1 : -1;
+    const int32_t safe_start = direction * static_cast<int32_t>(data_.safe_margin_ticks);
+    const int32_t safe_end = data_.manual_span_ticks - safe_start;
+    const int32_t safe_low = std::min(safe_start, safe_end);
+    const int32_t safe_high = std::max(safe_start, safe_end);
+    const int32_t table_position = std::clamp(position_ticks, safe_low, safe_high);
+    const int64_t span = std::abs(static_cast<int64_t>(safe_end) - safe_start);
+    if ((span == 0) || (data_.point_count < 2U)) {
+        return position_ticks;
+    }
+    const int64_t distance = std::abs(static_cast<int64_t>(table_position) - safe_start);
     const int64_t scaled = distance * (data_.point_count - 1U);
     const uint16_t index = static_cast<uint16_t>(std::min<int64_t>(scaled / span, data_.point_count - 1U));
     int32_t correction = data_.correction_ticks[index];
@@ -582,16 +591,33 @@ bool EncoderCalibration::locate_stored_position(const uint16_t raw, int32_t& pos
     const int32_t direction = (span > 0) ? 1 : -1;
     safe_start_ticks_ = direction * static_cast<int32_t>(data_.safe_margin_ticks);
     safe_end_ticks_ = span - safe_start_ticks_;
-    const int32_t safe_low = std::min(safe_start_ticks_, safe_end_ticks_);
-    const int32_t safe_high = std::max(safe_start_ticks_, safe_end_ticks_);
-    const int32_t middle = safe_start_ticks_ + ((safe_end_ticks_ - safe_start_ticks_) / 2);
+    return locate_position_in_stored_span(raw, true, position_ticks);
+}
+
+bool EncoderCalibration::locate_position_in_stored_span(
+    const uint16_t raw,
+    const bool safe_only,
+    int32_t& position_ticks) const
+{
+    const int32_t span = data_.manual_span_ticks;
+    if (span == 0) {
+        return false;
+    }
+    const int32_t direction = (span > 0) ? 1 : -1;
+    const int32_t margin = safe_only ? direction * static_cast<int32_t>(data_.safe_margin_ticks) : 0;
+    const int32_t range_start = margin;
+    const int32_t range_end = span - margin;
+    const int32_t tolerance = safe_only ? 0 : kHardLimitToleranceTicks;
+    const int32_t range_low = std::min(range_start, range_end) - tolerance;
+    const int32_t range_high = std::max(range_start, range_end) + tolerance;
+    const int32_t middle = range_start + ((range_end - range_start) / 2);
     const int32_t base = static_cast<int32_t>(raw) - static_cast<int32_t>(data_.limit_a_raw);
 
     bool found = false;
     int32_t best_distance = std::numeric_limits<int32_t>::max();
     for (int32_t turn = -2; turn <= 2; ++turn) {
         const int32_t candidate = base + (turn * kEncoderTicksPerTurn);
-        if ((candidate < safe_low) || (candidate > safe_high)) {
+        if ((candidate < range_low) || (candidate > range_high)) {
             continue;
         }
         const int32_t distance = std::abs(candidate - middle);
@@ -718,6 +744,22 @@ int32_t EncoderCalibration::progress_percent() const
 bool EncoderCalibration::blocks_normal_control() const { return state_ != EncoderCalibrationState::Idle; }
 const encoder_calibration_data& EncoderCalibration::data() const { return data_; }
 bool EncoderCalibration::has_stored_data() const { return has_stored_data_; }
+bool EncoderCalibration::calibrated_position_ticks(
+    const uint16_t raw,
+    int32_t& ticks_from_zero) const
+{
+    if (!has_stored_data_ || !zero_valid()) {
+        return false;
+    }
+    int32_t position_ticks = 0;
+    int32_t zero_ticks = 0;
+    if (!locate_position_in_stored_span(raw, false, position_ticks) ||
+        !locate_position_in_stored_span(data_.zero_raw, false, zero_ticks)) {
+        return false;
+    }
+    ticks_from_zero = corrected_position_ticks(position_ticks) - corrected_position_ticks(zero_ticks);
+    return true;
+}
 int32_t EncoderCalibration::manual_total_travel() const { return manual_total_travel_; }
 bool EncoderCalibration::zero_valid() const { return data_.zero_valid != 0U; }
 uint16_t EncoderCalibration::zero_raw() const { return data_.zero_raw; }

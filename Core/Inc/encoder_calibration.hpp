@@ -68,6 +68,7 @@ public:
     bool blocks_normal_control() const;
     const encoder_calibration_data& data() const;
     bool has_stored_data() const;
+    bool calibrated_position_ticks(uint16_t raw, int32_t& ticks_from_zero) const;
     int32_t manual_total_travel() const;
     bool zero_valid() const;
     uint16_t zero_raw() const;
@@ -81,6 +82,7 @@ private:
     bool process_table();
     bool prepare_backlash_rock(int32_t center_ticks);
     bool locate_stored_position(uint16_t raw, int32_t& position_ticks);
+    bool locate_position_in_stored_span(uint16_t raw, bool safe_only, int32_t& position_ticks) const;
     bool record_backlash_sample(int32_t position_ticks, int32_t tmc_position_steps);
     bool finalize_backlash();
     bool auto_stall_detected(uint32_t now_ms);

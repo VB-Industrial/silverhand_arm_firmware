@@ -94,7 +94,7 @@ public:
 
 DirectVelocityReader* direct_velocity_reader;
 NodeInfoReader* nireader;
-static constexpr size_t NUMBER_OF_REGISTERS = 26;
+static constexpr size_t NUMBER_OF_REGISTERS = 27;
 
 RegistersHandler<NUMBER_OF_REGISTERS>* registers_handler;
 
@@ -168,6 +168,19 @@ static void set_register_real32(uavcan_register_Value_1_0& value, const float da
     value._tag_ = 13;
     value.real32.value.elements[0] = data;
     value.real32.value.count = 1;
+}
+
+static void set_register_real32_array(
+    uavcan_register_Value_1_0& value,
+    const float* data,
+    const size_t count)
+{
+    value._tag_ = 13;
+    const size_t output_count = std::min(count, sizeof(value.real32.value.elements) / sizeof(float));
+    for (size_t index = 0U; index < output_count; ++index) {
+        value.real32.value.elements[index] = data[index];
+    }
+    value.real32.value.count = output_count;
 }
 
 void move_handler(
@@ -252,6 +265,27 @@ void fus_get_handler(
     set_register_real32(v_out, motor_fused_angle_manipulator());
     response.persistent = true;
     response._mutable = true;
+}
+
+void fusion_diag_handler(
+    const uavcan_register_Value_1_0&,
+    uavcan_register_Value_1_0& v_out,
+    RegisterAccessResponse::Type& response)
+{
+    motor_fusion_diagnostics diagnostics{};
+    motor_fusion_get_diagnostics(&diagnostics);
+    const float values[] = {
+        diagnostics.encoder_angle_rad,
+        diagnostics.tmc_angle_rad,
+        diagnostics.offset_rad,
+        diagnostics.fused_angle_rad,
+        diagnostics.encoder_error_rad,
+        diagnostics.backlash_rad,
+        diagnostics.calibrated_encoder ? 1.0F : 0.0F,
+    };
+    set_register_real32_array(v_out, values, std::size(values));
+    response.persistent = false;
+    response._mutable = false;
 }
 
 void arm_handler(
@@ -549,6 +583,7 @@ void setup_cyphal(FDCAN_HandleTypeDef* handler) {
             RegisterDefinition{"tmc_state", tmc_state_handler},
             RegisterDefinition{"tmc_error", tmc_error_handler},
             RegisterDefinition{"fus_get", fus_get_handler},
+            RegisterDefinition{"fusion_diag", fusion_diag_handler},
             RegisterDefinition{"fail_ack", fail_ack_handler},
             RegisterDefinition{"fault_active", fault_active_handler},
             RegisterDefinition{"fault_latched", fault_latched_handler},

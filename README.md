@@ -267,6 +267,10 @@ The node exposes the following read-only Cyphal registers:
 - `enc_status`: `[last_read_ok, HAL_status, transfer_count, error_count,
   raw_16bit_frame, has_valid_angle]`. The working single-frame AS50xx exchange
   is intentionally unchanged; a failed transfer preserves the last valid angle.
+- `fusion_diag`: `[calibrated_encoder_angle, calibrated_tmc_angle,
+  floating_offset, fused_angle, encoder_residual, measured_backlash,
+  calibrated_encoder_active]`, in manipulator radians. The final element is
+  `1.0` when the EEPROM correction table and geometric zero are active.
 - `fault_log_count`: sequence number of the latest persistent fault record.
 - `fault_log_last`: `[sequence, uptime_ms, fault_mask, GSTAT, DRV_STATUS]`.
 
@@ -287,13 +291,14 @@ Fault mask bits are:
 | 10 | EEPROM fault-log write failure |
 | 11 | Velocity-command timeout (session-latched only) |
 
-Position-mismatch evaluation is temporarily disabled until output-encoder
-calibration is implemented and applied.
+Position-mismatch evaluation remains temporarily disabled while the calibrated
+joint-angle estimator is commissioned on hardware.
 
 ## Output-encoder calibration
 
-Calibration is deliberately separate from the future fusion estimator. It
-builds and stores a correction table but does not yet apply it to joint state.
+Calibration builds and stores the data used by the runtime joint-angle
+estimator: the encoder correction table, measured TMC/output scale, effective
+backlash, physical limits, and geometric zero.
 
 1. Write `cal_cmd=1`. Firmware stops and disarms the driver.
 2. Move the joint by hand to either mechanical limit and write `cal_next=1`.
@@ -321,6 +326,28 @@ builds and stores a correction table but does not yet apply it to joint state.
 The automatic path stays inside the manually captured physical limits. Its
 margin is 2 percent of the observed span, clamped to 16...200 encoder ticks.
 Writing `cal_cmd=2` aborts from any state.
+
+### Runtime joint-angle estimate
+
+With a valid EEPROM calibration, firmware unwraps the AS5047 reading inside the
+stored physical span, interpolates the 256-point correction table, and subtracts
+the corrected geometric zero. TMC position increments are converted to output
+radians using the measured `tmc_span_steps`, so the motor and output encoder use
+the same calibrated coordinate scale.
+
+The estimator keeps one floating offset between the relative TMC position and
+the absolute output encoder. TMC increments provide fine motion inside a
+two-encoder-tick corridor. If the prediction leaves that corridor, only the
+offset required to return to its edge is applied. The offset can therefore move
+partially or completely as mechanical backlash is taken up; firmware does not
+infer a full backlash transition from a velocity reversal. Stored
+`backlash_steps` is converted to output radians and reported as the expected
+offset range in `fusion_diag`, but is not added to the position unconditionally.
+
+The fused velocity is the filtered derivative of this final angle. If the
+output encoder becomes unavailable, relative tracking continues from TMC
+increments; recovery reanchors the estimator to the absolute encoder without
+retaining a stale offset.
 
 For a fully automatic calibration, invoke the trigger register without a
 value:
