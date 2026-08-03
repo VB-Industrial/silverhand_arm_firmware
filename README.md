@@ -227,9 +227,16 @@ The node exposes the following read-only Cyphal registers:
 - `fault_active` and `fault_latched`: current and session-latched fault masks.
 - `fault_level`: `0` nominal, `1` warning, `2` degraded, `3` fault.
 - `stop_reason`: last commanded stop cause: `0` none, `1` network offline,
-  `2` position mismatch, `3` TMC5160 fault.
+  `2` position mismatch, `3` TMC5160 fault, `4` controller offline,
+  `5` velocity-command timeout.
 - `network_state`: `0` starting, `1` online, `2` offline. A heartbeat from any
   node marks the network online.
+- `controller_state`: `0` starting, `1` online, `2` offline. Only heartbeat
+  from `controller_node_id` in `robot_config.h` updates this state. Operational
+  joint commands are accepted only from this node.
+- `enc_status`: `[last_read_ok, HAL_status, transfer_count, error_count,
+  raw_16bit_frame, has_valid_angle]`. The working single-frame AS50xx exchange
+  is intentionally unchanged; a failed transfer preserves the last valid angle.
 - `fault_log_count`: sequence number of the latest persistent fault record.
 - `fault_log_last`: `[sequence, uptime_ms, fault_mask, GSTAT, DRV_STATUS]`.
 
@@ -248,6 +255,7 @@ Fault mask bits are:
 | 8 | Unclassified critical TMC5160 driver status |
 | 9 | EEPROM unavailable |
 | 10 | EEPROM fault-log write failure |
+| 11 | Velocity-command timeout (session-latched only) |
 
 Only overtemperature shutdowns and short circuits are written to EEPROM.
 Network, communication and position-mismatch events remain session-local. The
@@ -258,3 +266,8 @@ While the driver is enabled, firmware checks `IOIN`, `GSTAT` and `DRV_STATUS`
 every 100 ms. An invalid `IOIN` response is retried immediately; if both reads
 fail, firmware raises `DRV_EN` and enters the TMC communication-fault state.
 Configuration registers are verified only after driver initialization or rearm.
+
+Raw velocity commands must be refreshed at least every 500 ms. On timeout the
+firmware commands zero velocity and keeps the driver armed. Loss of controller
+heartbeat has the same stop/hold behavior; heartbeats from other nodes continue
+to indicate a live network but do not keep controller state online.

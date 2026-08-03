@@ -17,7 +17,7 @@ extern "C" {
 namespace
 {
 constexpr uint32_t kDegradedLedTogglePeriodMs = 100U;
-constexpr uint8_t kEncoderZeroStreakThreshold = 3U;
+constexpr uint8_t kEncoderErrorStreakThreshold = 3U;
 constexpr uint8_t kEncoderValidStreakThreshold = 10U;
 constexpr float kVelocityZeroThresholdRadS = 0.0001F;
 constexpr float kLargePositionErrorThresholdRad = 5.0F * static_cast<float>(M_PI) / 180.0F;
@@ -30,7 +30,7 @@ uint32_t g_zero_enc_runtime = 0U;
 uint16_t g_prev_enc_angle = 0U;
 uint32_t g_prev_fusion_ts_ms = 0U;
 uint32_t g_last_degraded_led_toggle_ms = 0U;
-uint8_t g_encoder_zero_streak = 0U;
+uint8_t g_encoder_error_streak = 0U;
 uint8_t g_encoder_valid_streak = 0U;
 float g_enc_velocity_lpf_rad_s = 0.0F;
 float g_fused_angle_rad = 0.0F;
@@ -38,6 +38,7 @@ float g_fused_velocity_rad_s = 0.0F;
 float g_startup_tmc_angle_offset_rad = 0.0F;
 bool g_output_encoder_available = false;
 bool g_output_encoder_degraded = false;
+bool g_encoder_last_read_ok = false;
 
 FaultManager g_fault_manager;
 Tmc5160StateMachine g_tmc_driver;
@@ -179,18 +180,18 @@ void update_encoder_status(const uint32_t now_ms)
         return;
     }
 
-    if (g_encoder_angle_raw == 0U) {
+    if (!g_encoder_last_read_ok) {
         g_encoder_valid_streak = 0U;
-        if (g_encoder_zero_streak < 255U) {
-            ++g_encoder_zero_streak;
+        if (g_encoder_error_streak < 255U) {
+            ++g_encoder_error_streak;
         }
-        if (g_output_encoder_available && (g_encoder_zero_streak >= kEncoderZeroStreakThreshold)) {
+        if (g_output_encoder_available && (g_encoder_error_streak >= kEncoderErrorStreakThreshold)) {
             set_output_encoder_available(false, now_ms);
         }
         return;
     }
 
-    g_encoder_zero_streak = 0U;
+    g_encoder_error_streak = 0U;
     if (g_encoder_valid_streak < 255U) {
         ++g_encoder_valid_streak;
     }
@@ -237,15 +238,16 @@ extern "C" void motor_init(void)
     g_zero_enc_runtime = kRobotJointProfile->default_zero_enc;
 
     if (kRobotJointProfile->has_output_encoder) {
-        as50_readAngle(&g_encoder_angle_raw, 100);
-        set_output_encoder_available(g_encoder_angle_raw != 0U, now_ms);
+        g_encoder_last_read_ok = as50_readAngle(&g_encoder_angle_raw, 100);
+        set_output_encoder_available(g_encoder_last_read_ok, now_ms);
     } else {
         g_encoder_angle_raw = 0U;
+        g_encoder_last_read_ok = false;
         set_output_encoder_available(false, now_ms);
     }
 
-    g_encoder_zero_streak = (g_encoder_angle_raw == 0U) ? 1U : 0U;
-    g_encoder_valid_streak = (g_encoder_angle_raw != 0U) ? 1U : 0U;
+    g_encoder_error_streak = g_encoder_last_read_ok ? 0U : 1U;
+    g_encoder_valid_streak = g_encoder_last_read_ok ? 1U : 0U;
     sync_tmc_offset_to_encoder();
     reset_fusion_tracking(now_ms);
     g_last_degraded_led_toggle_ms = now_ms;
@@ -256,9 +258,10 @@ extern "C" void motor_update(const uint32_t now_ms)
     g_tmc_driver.update(now_ms);
 
     if (kRobotJointProfile->has_output_encoder) {
-        as50_readAngle(&g_encoder_angle_raw, 100);
+        g_encoder_last_read_ok = as50_readAngle(&g_encoder_angle_raw, 100);
     } else {
         g_encoder_angle_raw = 0U;
+        g_encoder_last_read_ok = false;
     }
 
     update_encoder_status(now_ms);
@@ -275,6 +278,7 @@ extern "C" void motor_command(
     if (!g_fault_manager.remote_motion_allowed() || !g_tmc_driver.is_enabled()) {
         return;
     }
+    g_fault_manager.note_velocity_command(HAL_GetTick(), false);
 
     const int32_t target_position_steps = manipulator_radians_to_tmc_steps(position_rad);
     const float position_error_rad =
@@ -305,6 +309,7 @@ extern "C" void motor_move(const int32_t velocity_command)
         return;
     }
     tmc5160_move(velocity_command);
+    g_fault_manager.note_velocity_command(HAL_GetTick(), velocity_command != 0);
 }
 
 extern "C" void motor_set_position_steps(const int32_t target_position_steps)
@@ -312,6 +317,7 @@ extern "C" void motor_set_position_steps(const int32_t target_position_steps)
     if (!g_fault_manager.motion_allowed() || !g_tmc_driver.is_enabled()) {
         return;
     }
+    g_fault_manager.note_velocity_command(HAL_GetTick(), false);
     tmc5160_apply_default_motion_profile();
     tmc5160_position(target_position_steps, kDefaultPositionVelocitySteps);
 }
@@ -343,9 +349,11 @@ extern "C" int32_t motor_driver_error(void)
     return static_cast<int32_t>(g_tmc_driver.error());
 }
 
-extern "C" void motor_note_heartbeat(const uint32_t now_ms)
+extern "C" void motor_note_heartbeat(const uint32_t now_ms, const uint8_t source_node_id)
 {
-    g_fault_manager.note_heartbeat(now_ms);
+    g_fault_manager.note_heartbeat(
+        now_ms,
+        source_node_id == kRobotJointProfile->controller_node_id);
 }
 
 extern "C" int32_t motor_position_steps(void)
@@ -361,6 +369,23 @@ extern "C" int32_t motor_velocity_steps(void)
 extern "C" uint16_t motor_encoder_raw(void)
 {
     return g_encoder_angle_raw;
+}
+
+extern "C" bool motor_encoder_get_diagnostics(motor_encoder_diagnostics* const diagnostics)
+{
+    if (diagnostics == nullptr) {
+        return false;
+    }
+
+    as50_diagnostics_t encoder_diagnostics{};
+    as50_getDiagnostics(&encoder_diagnostics);
+    diagnostics->raw_frame = encoder_diagnostics.raw_frame;
+    diagnostics->transfer_count = encoder_diagnostics.transfer_count;
+    diagnostics->error_count = encoder_diagnostics.error_count;
+    diagnostics->last_hal_status = static_cast<int32_t>(encoder_diagnostics.last_hal_status);
+    diagnostics->last_read_ok = encoder_diagnostics.last_read_ok;
+    diagnostics->has_valid_angle = encoder_diagnostics.has_valid_angle;
+    return true;
 }
 
 extern "C" float motor_fused_angle_manipulator(void)
@@ -400,6 +425,11 @@ extern "C" uint32_t motor_fault_latched(void)
 extern "C" int32_t motor_network_state(void)
 {
     return static_cast<int32_t>(g_fault_manager.network_state());
+}
+
+extern "C" int32_t motor_controller_state(void)
+{
+    return static_cast<int32_t>(g_fault_manager.controller_state());
 }
 
 extern "C" int32_t motor_stop_reason(void)

@@ -66,6 +66,12 @@
 #include "tmc5160.h"
 #include <stdlib.h>
 
+#define TMC5160_GCONF_EN_PWM_MODE_MASK  (1UL << 2U)
+#define TMC5160_GCONF_SHAFT_MASK        (1UL << 4U)
+#define TMC5160_GCONF_READBACK_MASK     0x0003FFFFUL
+
+static uint32_t g_gconf_shadow = 0U;
+
 
 #if (USE_FREERTOS == 1)
 #include "cmsis_os.h"
@@ -194,14 +200,24 @@ static void tmc5160_set_pwmconf(const uint32_t value)
 	tmc5160_write_reg32(TMC5160_REG_PWMCONF, value);
 }
 
-static void tmc5160_set_gconf(const uint32_t value)
+static void tmc5160_reset_gconf_shadow(void)
 {
-	tmc5160_write_reg32(TMC5160_REG_GCONF, value);
+	g_gconf_shadow = 0U;
+}
+
+static void tmc5160_set_gconf_flag(const uint32_t mask, const bool enabled)
+{
+	if (enabled) {
+		g_gconf_shadow |= mask;
+	} else {
+		g_gconf_shadow &= ~mask;
+	}
+	tmc5160_write_reg32(TMC5160_REG_GCONF, g_gconf_shadow);
 }
 
 static void tmc5160_enable_stealthchop_default(void)
 {
-	tmc5160_set_gconf(0x00000004U);
+	tmc5160_set_gconf_flag(TMC5160_GCONF_EN_PWM_MODE_MASK, true);
 }
 
 static void tmc5160_set_tpwm_thrs(const uint32_t value)
@@ -387,7 +403,8 @@ bool tmc5160_read_driver_enabled(bool* enabled)
 
 bool tmc5160_configuration_matches(void)
 {
-	return (((uint32_t)tmc5160_read_reg(TMC5160_REG_GCONF) & 0x1FFFFU) == 0x00000004U) &&
+	return (((uint32_t)tmc5160_read_reg(TMC5160_REG_GCONF) & TMC5160_GCONF_READBACK_MASK) ==
+	        (g_gconf_shadow & TMC5160_GCONF_READBACK_MASK)) &&
 	       ((uint32_t)tmc5160_read_reg(TMC5160_REG_CHOPCONF) == 0x000000C3U) &&
 	       (((uint32_t)tmc5160_read_reg(TMC5160_REG_RAMPMODE) & 0x3U) == 0U);
 }
@@ -433,6 +450,7 @@ void tmc5160_init(int8_t init_irun)
 {
 	tmc5160_configure_pins_for_spi_mode();
 	tmc5160_prepare_driver_after_strap();
+	tmc5160_reset_gconf_shadow();
 
 	tmc5160_set_chopconf_spreadcycle_default();
 	tmc5160_set_current_levels((uint8_t) init_irun, (uint8_t) init_irun, 0U);
@@ -455,14 +473,7 @@ void tmc5160_init(int8_t init_irun)
 
 void tmc5160_set_motor_direction(int8_t dir)
 {
-	if(dir <= 0)
-	{
-	  tmc5160_set_gconf(0x00000014U);
-	}
-	else
-	{
-	  tmc5160_set_gconf(0x00000004U);
-	}
+	tmc5160_set_gconf_flag(TMC5160_GCONF_SHAFT_MASK, dir <= 0);
 }
 
 void tmc5160_set_zero()

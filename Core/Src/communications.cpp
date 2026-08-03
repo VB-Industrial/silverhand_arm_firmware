@@ -43,8 +43,9 @@ public:
     ) {};
     void handler(const uavcan_node_Heartbeat_1_0& hbeat, CanardRxTransfer* transfer) override {
         UNUSED(hbeat);
-        UNUSED(transfer);
-        motor_note_heartbeat(HAL_GetTick());
+        if (transfer != nullptr) {
+            motor_note_heartbeat(HAL_GetTick(), transfer->metadata.remote_node_id);
+        }
     }
 };
 
@@ -59,7 +60,10 @@ public:
     ) {};
     void handler(const reg_udral_physics_kinematics_rotation_Planar_0_1& js_in, CanardRxTransfer* transfer) override
     {
-        UNUSED(transfer);
+        if ((transfer == nullptr) ||
+            (transfer->metadata.remote_node_id != kRobotJointProfile->controller_node_id)) {
+            return;
+        }
         motor_command(
             js_in.angular_position.radian,
             js_in.angular_velocity.radian_per_second,
@@ -69,7 +73,7 @@ public:
 
 JSReader* js_reader;
 NodeInfoReader* nireader;
-static constexpr size_t NUMBER_OF_REGISTERS = 16;
+static constexpr size_t NUMBER_OF_REGISTERS = 18;
 
 RegistersHandler<NUMBER_OF_REGISTERS>* registers_handler;
 
@@ -198,6 +202,26 @@ void enc_get_handler(
     response._mutable = true;
 }
 
+void enc_status_handler(
+    const uavcan_register_Value_1_0&,
+    uavcan_register_Value_1_0& v_out,
+    RegisterAccessResponse::Type& response
+) {
+    motor_encoder_diagnostics diagnostics{};
+    motor_encoder_get_diagnostics(&diagnostics);
+    const int32_t values[] = {
+        diagnostics.last_read_ok ? 1 : 0,
+        diagnostics.last_hal_status,
+        static_cast<int32_t>(diagnostics.transfer_count),
+        static_cast<int32_t>(diagnostics.error_count),
+        static_cast<int32_t>(diagnostics.raw_frame),
+        diagnostics.has_valid_angle ? 1 : 0,
+    };
+    set_register_int32_array(v_out, values, sizeof(values) / sizeof(values[0]));
+    response.persistent = false;
+    response._mutable = false;
+}
+
 void fus_get_handler(
     const uavcan_register_Value_1_0&,
     uavcan_register_Value_1_0& v_out,
@@ -308,6 +332,16 @@ void network_state_handler(
     response._mutable = false;
 }
 
+void controller_state_handler(
+    const uavcan_register_Value_1_0&,
+    uavcan_register_Value_1_0& v_out,
+    RegisterAccessResponse::Type& response
+) {
+    set_register_int32(v_out, motor_controller_state());
+    response.persistent = false;
+    response._mutable = false;
+}
+
 void fault_log_count_handler(
     const uavcan_register_Value_1_0&,
     uavcan_register_Value_1_0& v_out,
@@ -390,6 +424,7 @@ void setup_cyphal(FDCAN_HandleTypeDef* handler) {
             RegisterDefinition{"pos_set", pos_set_handler},
             RegisterDefinition{"pos_get", pos_get_handler},
             RegisterDefinition{"enc_get", enc_get_handler},
+            RegisterDefinition{"enc_status", enc_status_handler},
             RegisterDefinition{"arm", arm_handler},
             RegisterDefinition{"tmc_state", tmc_state_handler},
             RegisterDefinition{"tmc_error", tmc_error_handler},
@@ -400,6 +435,7 @@ void setup_cyphal(FDCAN_HandleTypeDef* handler) {
             RegisterDefinition{"fault_level", fault_level_handler},
             RegisterDefinition{"stop_reason", stop_reason_handler},
             RegisterDefinition{"network_state", network_state_handler},
+            RegisterDefinition{"controller_state", controller_state_handler},
             RegisterDefinition{"fault_log_count", fault_log_count_handler},
             RegisterDefinition{"fault_log_last", fault_log_last_handler},
         },

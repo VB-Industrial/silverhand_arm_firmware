@@ -11,6 +11,7 @@
 
 #include "stm32g4xx_hal.h"
 #include "spi.h"
+#include <stdbool.h>
 #include <stdint.h>
 #include <stddef.h>
 
@@ -19,6 +20,15 @@
 #define     _ENCODER_NSS_PIN GPIO_PIN_15
 #define 	_ENCODER_READMASK 0x3fff
 
+typedef struct {
+	uint16_t raw_frame;
+	uint32_t transfer_count;
+	uint32_t error_count;
+	HAL_StatusTypeDef last_hal_status;
+	bool last_read_ok;
+	bool has_valid_angle;
+} as50_diagnostics_t;
+
 
 /**
   * @brief  Read encoder data into given var
@@ -26,7 +36,12 @@
   * @param  timeout Timeout duration
   * @retval bool status
 */
-void as50_readAngle(uint16_t * data, uint32_t timeout);
+bool as50_readAngle(uint16_t * data, uint32_t timeout);
+
+/**
+  * @brief  Copy the passive SPI diagnostics collected by as50_readAngle
+  */
+void as50_getDiagnostics(as50_diagnostics_t * diagnostics);
 
 
 /**

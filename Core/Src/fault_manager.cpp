@@ -8,6 +8,7 @@ constexpr float kPositionMismatchThresholdRad = 10.0F * static_cast<float>(M_PI)
 constexpr uint8_t kPositionMismatchFaultCount = 3U;
 constexpr uint32_t kNetworkStartupGraceMs = 5000U;
 constexpr uint32_t kHeartbeatTimeoutMs = 2500U;
+constexpr uint32_t kVelocityCommandTimeoutMs = 500U;
 
 constexpr uint32_t kTmcFaultMask =
     FaultTmcCommunication |
@@ -37,6 +38,7 @@ void FaultManager::initialize(const uint32_t now_ms, const uint8_t joint_id)
 {
     startup_ms_ = now_ms;
     network_state_ = NetworkState::Starting;
+    controller_state_ = NetworkState::Starting;
     fault_log_init(joint_id);
     if (!fault_log_available()) {
         active_faults_ |= FaultEepromUnavailable;
@@ -45,11 +47,23 @@ void FaultManager::initialize(const uint32_t now_ms, const uint8_t joint_id)
     update_level();
 }
 
-void FaultManager::note_heartbeat(const uint32_t now_ms)
+void FaultManager::note_heartbeat(const uint32_t now_ms, const bool from_controller)
 {
     heartbeat_seen_ = true;
     last_heartbeat_ms_ = now_ms;
     network_state_ = NetworkState::Online;
+
+    if (from_controller) {
+        controller_heartbeat_seen_ = true;
+        last_controller_heartbeat_ms_ = now_ms;
+        controller_state_ = NetworkState::Online;
+    }
+}
+
+void FaultManager::note_velocity_command(const uint32_t now_ms, const bool active)
+{
+    velocity_command_active_ = active;
+    last_velocity_command_ms_ = now_ms;
 }
 
 FaultManager::UpdateResult FaultManager::update(
@@ -67,6 +81,17 @@ FaultManager::UpdateResult FaultManager::update(
         if (((active_faults_ & kFaultLevelMask) == 0U) && !mismatch_fault_latched_) {
             stop_reason_ = StopReason::NetworkOffline;
         }
+    }
+    if (update_controller(now_ms)) {
+        result.stop_motion = true;
+        if (((active_faults_ & kFaultLevelMask) == 0U) && !mismatch_fault_latched_) {
+            stop_reason_ = StopReason::ControllerOffline;
+        }
+    }
+    if (update_command_watchdog(now_ms)) {
+        result.stop_motion = true;
+        latched_faults_ |= FaultCommandTimeout;
+        stop_reason_ = StopReason::CommandTimeout;
     }
     if (update_position_mismatch(has_output_encoder, encoder_angle_rad, tmc_angle_rad)) {
         result.stop_motion = true;
@@ -89,6 +114,9 @@ FaultManager::UpdateResult FaultManager::update(
     latched_faults_ |= active_faults_;
     update_persistent_log(now_ms, tmc_snapshot);
     update_level();
+    if (result.stop_motion) {
+        velocity_command_active_ = false;
+    }
     return result;
 }
 
@@ -114,7 +142,7 @@ bool FaultManager::motion_allowed() const
 
 bool FaultManager::remote_motion_allowed() const
 {
-    return motion_allowed() && (network_state_ != NetworkState::Offline);
+    return motion_allowed() && (controller_state_ == NetworkState::Online);
 }
 
 uint32_t FaultManager::active_faults() const
@@ -135,6 +163,11 @@ FaultLevel FaultManager::level() const
 NetworkState FaultManager::network_state() const
 {
     return network_state_;
+}
+
+NetworkState FaultManager::controller_state() const
+{
+    return controller_state_;
 }
 
 StopReason FaultManager::stop_reason() const
@@ -163,6 +196,31 @@ bool FaultManager::update_network(const uint32_t now_ms)
         network_state_ = NetworkState::Offline;
     }
     return (previous_state != NetworkState::Offline) && (network_state_ == NetworkState::Offline);
+}
+
+bool FaultManager::update_controller(const uint32_t now_ms)
+{
+    if (!controller_heartbeat_seen_) {
+        return false;
+    }
+
+    const NetworkState previous_state = controller_state_;
+    if ((now_ms - last_controller_heartbeat_ms_) >= kHeartbeatTimeoutMs) {
+        controller_state_ = NetworkState::Offline;
+    }
+    return (previous_state == NetworkState::Online) &&
+           (controller_state_ == NetworkState::Offline);
+}
+
+bool FaultManager::update_command_watchdog(const uint32_t now_ms)
+{
+    if (!velocity_command_active_ ||
+        ((now_ms - last_velocity_command_ms_) < kVelocityCommandTimeoutMs)) {
+        return false;
+    }
+
+    velocity_command_active_ = false;
+    return true;
 }
 
 bool FaultManager::update_position_mismatch(
@@ -268,9 +326,10 @@ void FaultManager::update_level()
     if (((active_faults_ & kFaultLevelMask) != 0U) || mismatch_fault_latched_) {
         level_ = FaultLevel::Fault;
     } else if ((network_state_ == NetworkState::Offline) ||
+               (controller_state_ == NetworkState::Offline) ||
                ((active_faults_ & (FaultEepromUnavailable | FaultEepromWrite)) != 0U)) {
         level_ = FaultLevel::Degraded;
-    } else if (((latched_faults_ & FaultPositionMismatch) != 0U) ||
+    } else if (((latched_faults_ & (FaultPositionMismatch | FaultCommandTimeout)) != 0U) ||
                ((active_faults_ & FaultTmcOvertemperatureWarning) != 0U)) {
         level_ = FaultLevel::Warning;
     } else {

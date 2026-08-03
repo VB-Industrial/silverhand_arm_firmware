@@ -19,6 +19,7 @@ enum Fault : uint32_t
     FaultTmcCriticalStatus = 1UL << 8U,
     FaultEepromUnavailable = 1UL << 9U,
     FaultEepromWrite = 1UL << 10U,
+    FaultCommandTimeout = 1UL << 11U,
 };
 
 enum class FaultLevel : int32_t
@@ -42,6 +43,8 @@ enum class StopReason : int32_t
     NetworkOffline = 1,
     PositionMismatch = 2,
     TmcDriver = 3,
+    ControllerOffline = 4,
+    CommandTimeout = 5,
 };
 
 class FaultManager final
@@ -53,7 +56,8 @@ public:
     };
 
     void initialize(uint32_t now_ms, uint8_t joint_id);
-    void note_heartbeat(uint32_t now_ms);
+    void note_heartbeat(uint32_t now_ms, bool from_controller);
+    void note_velocity_command(uint32_t now_ms, bool active);
     UpdateResult update(
         uint32_t now_ms,
         bool has_output_encoder,
@@ -70,6 +74,7 @@ public:
     uint32_t latched_faults() const;
     FaultLevel level() const;
     NetworkState network_state() const;
+    NetworkState controller_state() const;
     StopReason stop_reason() const;
 
     uint32_t log_count() const;
@@ -77,6 +82,8 @@ public:
 
 private:
     bool update_network(uint32_t now_ms);
+    bool update_controller(uint32_t now_ms);
+    bool update_command_watchdog(uint32_t now_ms);
     bool update_position_mismatch(bool available, float encoder_angle_rad, float tmc_angle_rad);
     void update_tmc_faults(Tmc5160Error error, const tmc5160_fault_snapshot& snapshot);
     void update_persistent_log(uint32_t now_ms, const tmc5160_fault_snapshot& snapshot);
@@ -87,12 +94,17 @@ private:
     uint32_t previous_persistent_faults_ = FaultNone;
     FaultLevel level_ = FaultLevel::Nominal;
     NetworkState network_state_ = NetworkState::Starting;
+    NetworkState controller_state_ = NetworkState::Starting;
     StopReason stop_reason_ = StopReason::None;
 
     uint32_t startup_ms_ = 0U;
     uint32_t last_heartbeat_ms_ = 0U;
+    uint32_t last_controller_heartbeat_ms_ = 0U;
+    uint32_t last_velocity_command_ms_ = 0U;
     uint8_t mismatch_warning_count_ = 0U;
     bool heartbeat_seen_ = false;
+    bool controller_heartbeat_seen_ = false;
+    bool velocity_command_active_ = false;
     bool mismatch_active_ = false;
     bool mismatch_fault_latched_ = false;
     bool eeprom_write_failed_ = false;

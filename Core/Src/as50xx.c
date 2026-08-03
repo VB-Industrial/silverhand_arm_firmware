@@ -9,6 +9,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <limits.h>
 
 #if (_ENCODER_USE_FREERTOS == 1)
 #include "cmsis_os.h"
@@ -21,6 +22,15 @@ uint16_t read_angle_register = 0x3FFF; //angle read register
 uint16_t set_zero_register_M = 0x0016; //angle set zero register MOST
 uint16_t set_zero_register_L = 0x0017; //angle set zero register LEAST
 uint16_t spiR;
+
+static as50_diagnostics_t diagnostics = {
+	.raw_frame = 0U,
+	.transfer_count = 0U,
+	.error_count = 0U,
+	.last_hal_status = HAL_ERROR,
+	.last_read_ok = false,
+	.has_valid_angle = false,
+};
 
 /*
 uint16_t parity(uint16_t x){};
@@ -42,27 +52,66 @@ uint16_t parity(uint16_t x)
 	return (parity & 0x1);
 }
 
-void as50_readAngle(uint16_t * data, uint32_t timeout)
+bool as50_readAngle(uint16_t * data, uint32_t timeout)
 {
+	  uint16_t raw_frame = 0U;
 
+	  if (data == NULL)
+	  {
+		  return false;
+	  }
+
+	  if (diagnostics.transfer_count < UINT32_MAX)
+	  {
+		  ++diagnostics.transfer_count;
+	  }
+
+	  /*
+	   * This single-frame exchange is intentionally kept as proven on the
+	   * physical T-encoder. AS50xx replies are pipelined; do not change the
+	   * command sequence without verifying it on the hardware bench.
+	   */
 	  HAL_GPIO_WritePin(_ENCODER_NSS_GPIO, _ENCODER_NSS_PIN, GPIO_PIN_RESET);
-	  if (HAL_SPI_TransmitReceive(&_ENCODER_SPI, (uint8_t*)&read_angle_register, (uint8_t*)data, 1, timeout) == HAL_OK)
+	  const HAL_StatusTypeDef status = HAL_SPI_TransmitReceive(
+		  &_ENCODER_SPI,
+		  (uint8_t*)&read_angle_register,
+		  (uint8_t*)&raw_frame,
+		  1,
+		  timeout);
+	  HAL_GPIO_WritePin(_ENCODER_NSS_GPIO, _ENCODER_NSS_PIN, GPIO_PIN_SET);
+
+	  diagnostics.last_hal_status = status;
+	  diagnostics.last_read_ok = (status == HAL_OK);
+	  if (status != HAL_OK)
 	  {
-		  HAL_GPIO_WritePin(_ENCODER_NSS_GPIO, _ENCODER_NSS_PIN, GPIO_PIN_SET);
-		  *data &= _ENCODER_READMASK;
+		  if (diagnostics.error_count < UINT32_MAX)
+		  {
+			  ++diagnostics.error_count;
+		  }
+		  return false;
 	  }
-	  else
-	  {
-		  HAL_GPIO_WritePin(_ENCODER_NSS_GPIO, _ENCODER_NSS_PIN, GPIO_PIN_SET);
-	  }
+
+	  diagnostics.raw_frame = raw_frame;
+	  diagnostics.has_valid_angle = true;
+	  *data = raw_frame & _ENCODER_READMASK;
+	  return true;
 }
 
+void as50_getDiagnostics(as50_diagnostics_t * diagnostics_out)
+{
+	if (diagnostics_out != NULL)
+	{
+		*diagnostics_out = diagnostics;
+	}
+}
 
 void as50_setZero(uint32_t timeout)
 {
-	  UNUSED(timeout);
-	  uint16_t angle_to_set_as_zero;
-	  as50_readAngle(&angle_to_set_as_zero, 100);
+	  uint16_t angle_to_set_as_zero = 0U;
+	  if (!as50_readAngle(&angle_to_set_as_zero, timeout))
+	  {
+		  return;
+	  }
 	  as50_write(set_zero_register_M, ((angle_to_set_as_zero >> 6) & 0x00FF));
 	  as50_write(set_zero_register_L, (angle_to_set_as_zero  & 0x003F));
 }
