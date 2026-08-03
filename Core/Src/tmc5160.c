@@ -471,7 +471,8 @@ void tmc5160_init(int8_t init_irun)
 	tmc5160_set_chopconf_spreadcycle_default();
 	tmc5160_set_current_levels((uint8_t) init_irun, (uint8_t) init_irun, 0U);
 	tmc5160_set_tpowerdown(0x0AU);
-	tmc5160_set_pwmconf(0xC40D001EU);
+	// PWM_FREQ=2: about 23.4 kHz with the TMC5160 internal 12 MHz clock.
+	tmc5160_set_pwmconf(0xC40E001EU);
 	tmc5160_enable_stealthchop_default();
 	tmc5160_set_tpwm_thrs(0x000000C8U);
 
