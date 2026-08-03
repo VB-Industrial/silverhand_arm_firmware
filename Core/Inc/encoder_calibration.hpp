@@ -48,6 +48,7 @@ public:
     void initialize(uint8_t joint_id, bool encoder_inverted, uint16_t raw);
     bool begin(bool encoder_available, uint16_t raw);
     bool begin_auto(uint32_t now_ms, bool encoder_available, uint16_t raw);
+    bool calibrate_zero(uint16_t raw);
     bool advance(uint32_t now_ms, bool encoder_available, uint16_t raw);
     void abort();
     void fail(EncoderCalibrationError error);
@@ -60,6 +61,8 @@ public:
     const encoder_calibration_data& data() const;
     bool has_stored_data() const;
     int32_t manual_total_travel() const;
+    bool zero_valid() const;
+    uint16_t zero_raw() const;
 
 private:
     int32_t observe_raw(uint16_t raw);

@@ -94,7 +94,7 @@ public:
 
 DirectVelocityReader* direct_velocity_reader;
 NodeInfoReader* nireader;
-static constexpr size_t NUMBER_OF_REGISTERS = 24;
+static constexpr size_t NUMBER_OF_REGISTERS = 25;
 
 RegistersHandler<NUMBER_OF_REGISTERS>* registers_handler;
 
@@ -398,6 +398,16 @@ void auto_calibration_handler(
     response._mutable = false;
 }
 
+void zero_calibration_handler(
+    const uavcan_register_Value_1_0&,
+    uavcan_register_Value_1_0& v_out,
+    RegisterAccessResponse::Type& response)
+{
+    set_register_int32(v_out, motor_zero_calibrate() ? 1 : 0);
+    response.persistent = false;
+    response._mutable = false;
+}
+
 void calibration_next_handler(
     const uavcan_register_Value_1_0& v_in,
     uavcan_register_Value_1_0& v_out,
@@ -432,7 +442,7 @@ void calibration_result_handler(
     uavcan_register_Value_1_0& v_out,
     RegisterAccessResponse::Type& response)
 {
-    int32_t values[10]{};
+    int32_t values[12]{};
     uint8_t count = 0U;
     motor_calibration_result(values, static_cast<uint8_t>(std::size(values)), &count);
     set_register_int32_array(v_out, values, count);
@@ -538,6 +548,7 @@ void setup_cyphal(FDCAN_HandleTypeDef* handler) {
             RegisterDefinition{"control_mode", control_mode_handler},
             RegisterDefinition{"cal_cmd", calibration_command_handler},
             RegisterDefinition{"auto_cal", auto_calibration_handler},
+            RegisterDefinition{"zero_cal", zero_calibration_handler},
             RegisterDefinition{"cal_next", calibration_next_handler},
             RegisterDefinition{"cal_state", calibration_state_handler},
             RegisterDefinition{"cal_result", calibration_result_handler},

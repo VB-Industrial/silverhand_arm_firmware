@@ -247,12 +247,16 @@ The node exposes the following read-only Cyphal registers:
 - `auto_cal`: reading this trigger register starts a fully automatic low-current
   limit search and calibration; use `cal_state` for status instead of reading
   `auto_cal` again.
+- `zero_cal`: reading this trigger register at the known geometric-zero pose
+  stops the motor, stores the current output-encoder raw value, and sets the
+  TMC5160 position to zero. Use `cal_result` for status; every read triggers a
+  new zero calibration.
 - `cal_next`: write `1` to capture limit A, capture limit B, and finally start
   the automatic pass, according to the current calibration state.
 - `cal_state`: `[state, error, progress_percent]`.
 - `cal_result`: `[state, error, progress, limit_a_raw, limit_b_raw,
   signed_manual_span, safe_margin, point_count, tmc_span_steps,
-  manual_total_travel]`.
+  zero_valid, zero_raw, manual_total_travel]`.
 - `enc_status`: `[last_read_ok, HAL_status, transfer_count, error_count,
   raw_16bit_frame, has_valid_angle]`. The working single-frame AS50xx exchange
   is intentionally unchanged; a failed transfer preserves the last valid angle.
@@ -319,6 +323,20 @@ ready, `4` move to A, `5` settle, `6` sweep to B, `7` processing, `8` saving,
 `9` complete, `10` failed, and `11` aborted.
 Automatic discovery additionally uses `12` seek limit A, `13` back off A, and
 `14` seek limit B.
+
+After calibrating the limits/table, place the joint at its geometric zero and
+invoke the trigger without a value:
+
+```bash
+y r 26 zero_cal
+```
+
+This command is accepted only in calibration state `0` with a valid stored
+encoder calibration and a working output encoder. It stops and waits for the
+motor, persists the encoder zero in the same redundant EEPROM record, then
+sets the TMC5160 position and the reported joint angle to zero. Existing
+version-1 calibration records are read without losing their limit/table data;
+the first successful `zero_cal` rewrites the selected slot using version 2.
 
 Only overtemperature shutdowns and short circuits are written to EEPROM.
 Network, communication and position-mismatch events remain session-local. The

@@ -25,6 +25,7 @@ constexpr float kLargePositionErrorThresholdRad = 5.0F * static_cast<float>(M_PI
 constexpr int32_t kDefaultPositionVelocitySteps = 10000;
 constexpr int32_t kFastPositionVelocitySteps = 30000;
 constexpr int32_t kFullThrottlePositionVelocitySteps = 30000;
+constexpr uint32_t kZeroCalibrationStopTimeoutMs = 250U;
 
 uint16_t g_encoder_angle_raw = 0U;
 uint32_t g_zero_enc_runtime = 0U;
@@ -297,14 +298,17 @@ extern "C" void motor_init(void)
         set_output_encoder_available(false, now_ms);
     }
 
-    g_encoder_error_streak = g_encoder_last_read_ok ? 0U : 1U;
-    g_encoder_valid_streak = g_encoder_last_read_ok ? 1U : 0U;
-    sync_tmc_offset_to_encoder();
-    reset_fusion_tracking(now_ms);
     g_encoder_calibration.initialize(
         kRobotJointProfile->joint_index,
         kRobotJointProfile->output_encoder_inverted != 0,
         g_encoder_angle_raw);
+    if (g_encoder_calibration.zero_valid()) {
+        g_zero_enc_runtime = g_encoder_calibration.zero_raw();
+    }
+    g_encoder_error_streak = g_encoder_last_read_ok ? 0U : 1U;
+    g_encoder_valid_streak = g_encoder_last_read_ok ? 1U : 0U;
+    sync_tmc_offset_to_encoder();
+    reset_fusion_tracking(now_ms);
     g_last_degraded_led_toggle_ms = now_ms;
 }
 
@@ -573,6 +577,35 @@ extern "C" bool motor_auto_calibration_start(void)
     return true;
 }
 
+extern "C" bool motor_zero_calibrate(void)
+{
+    if (g_encoder_calibration.blocks_normal_control() ||
+        !g_output_encoder_available ||
+        !g_encoder_calibration.has_stored_data()) {
+        return false;
+    }
+
+    tmc5160_move(0);
+    const uint32_t stop_started_ms = HAL_GetTick();
+    while ((tmc5160_velocity_read() != 0) &&
+           ((HAL_GetTick() - stop_started_ms) < kZeroCalibrationStopTimeoutMs)) {
+        HAL_Delay(1U);
+    }
+    if (tmc5160_velocity_read() != 0) {
+        return false;
+    }
+    if (!g_encoder_calibration.calibrate_zero(g_encoder_angle_raw)) {
+        return false;
+    }
+
+    g_zero_enc_runtime = g_encoder_angle_raw;
+    tmc5160_set_zero();
+    sync_tmc_offset_to_encoder();
+    reset_fusion_tracking(HAL_GetTick());
+    g_control_mode = MOTOR_CONTROL_MODE_HOLD;
+    return true;
+}
+
 extern "C" int32_t motor_calibration_state(void)
 {
     return static_cast<int32_t>(g_encoder_calibration.state());
@@ -590,7 +623,7 @@ extern "C" int32_t motor_calibration_progress(void)
 
 extern "C" void motor_calibration_result(int32_t* const values, const uint8_t capacity, uint8_t* const count)
 {
-    if ((values == nullptr) || (count == nullptr) || (capacity < 10U)) {
+    if ((values == nullptr) || (count == nullptr) || (capacity < 12U)) {
         return;
     }
     const encoder_calibration_data& data = g_encoder_calibration.data();
@@ -603,8 +636,10 @@ extern "C" void motor_calibration_result(int32_t* const values, const uint8_t ca
     values[6] = data.safe_margin_ticks;
     values[7] = data.point_count;
     values[8] = data.tmc_span_steps;
-    values[9] = g_encoder_calibration.manual_total_travel();
-    *count = 10U;
+    values[9] = data.zero_valid;
+    values[10] = data.zero_raw;
+    values[11] = g_encoder_calibration.manual_total_travel();
+    *count = 12U;
 }
 
 extern "C" float motor_fused_angle_manipulator(void)

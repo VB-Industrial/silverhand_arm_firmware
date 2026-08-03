@@ -41,7 +41,11 @@ bool EncoderCalibration::begin_auto(const uint32_t now_ms, const bool encoder_av
     if (!encoder_available || blocks_normal_control()) {
         return false;
     }
+    const uint16_t saved_zero_raw = data_.zero_raw;
+    const uint8_t saved_zero_valid = data_.zero_valid;
     data_ = {};
+    data_.zero_raw = saved_zero_raw;
+    data_.zero_valid = saved_zero_valid;
     previous_raw_ = raw;
     position_ticks_ = 0;
     previous_position_ticks_ = 0;
@@ -54,6 +58,22 @@ bool EncoderCalibration::begin_auto(const uint32_t now_ms, const bool encoder_av
     return true;
 }
 
+bool EncoderCalibration::calibrate_zero(const uint16_t raw)
+{
+    if ((state_ != EncoderCalibrationState::Idle) || !has_stored_data_) {
+        return false;
+    }
+    encoder_calibration_data updated = data_;
+    updated.zero_raw = raw;
+    updated.zero_valid = 1U;
+    if (!encoder_calibration_storage_save(joint_id_, &updated)) {
+        return false;
+    }
+    data_ = updated;
+    has_stored_data_ = true;
+    return true;
+}
+
 bool EncoderCalibration::advance(const uint32_t now_ms, const bool encoder_available, const uint16_t raw)
 {
     if (!encoder_available) {
@@ -62,8 +82,12 @@ bool EncoderCalibration::advance(const uint32_t now_ms, const bool encoder_avail
     }
     observe_raw(raw);
     switch (state_) {
-    case EncoderCalibrationState::WaitLimitA:
+    case EncoderCalibrationState::WaitLimitA: {
+        const uint16_t saved_zero_raw = data_.zero_raw;
+        const uint8_t saved_zero_valid = data_.zero_valid;
         data_ = {};
+        data_.zero_raw = saved_zero_raw;
+        data_.zero_valid = saved_zero_valid;
         data_.limit_a_raw = raw;
         position_ticks_ = 0;
         previous_position_ticks_ = 0;
@@ -71,6 +95,7 @@ bool EncoderCalibration::advance(const uint32_t now_ms, const bool encoder_avail
         previous_raw_ = raw;
         state_ = EncoderCalibrationState::WaitLimitB;
         return true;
+    }
     case EncoderCalibrationState::WaitLimitB: {
         const int32_t span = position_ticks_;
         data_.limit_b_raw = raw;
@@ -400,3 +425,5 @@ bool EncoderCalibration::blocks_normal_control() const { return state_ != Encode
 const encoder_calibration_data& EncoderCalibration::data() const { return data_; }
 bool EncoderCalibration::has_stored_data() const { return has_stored_data_; }
 int32_t EncoderCalibration::manual_total_travel() const { return manual_total_travel_; }
+bool EncoderCalibration::zero_valid() const { return data_.zero_valid != 0U; }
+uint16_t EncoderCalibration::zero_raw() const { return data_.zero_raw; }
