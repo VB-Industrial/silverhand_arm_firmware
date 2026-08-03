@@ -35,6 +35,8 @@ typedef struct robot_joint_profile {
     float velocity_tmc_weight;
     float velocity_encoder_weight;
     float velocity_encoder_lpf_alpha;
+    float maximum_servo_velocity_rad_s;
+    float maximum_direct_velocity_rad_s;
     bool enable_cyphal;
     bool has_output_encoder;
     int8_t output_encoder_inverted;
@@ -55,12 +57,12 @@ typedef struct robot_joint_profile {
  *                 joints by the transfer source node-ID
  */
 static const robot_joint_profile kRobotJointProfiles[] = {
-    {1U, 21U, 100U, 1121U, 1131U, 1001U, 7509U, 17U, 3.9F, 12, 5, -1, 2048000U, 10.0F, 4.0F, 4785U, 0.8F, 0.2F, 0.95F, 0.05F, 0.1F, true, true, 0},
-    {2U, 22U, 100U, 1122U, 1132U, 1001U, 7509U, 23U, 10.2F, 31, 10, 1, 2458010U, 50.0F, 1.0F, 9871U, 0.8F, 0.2F, 0.95F, 0.05F, 0.1F, true, true, 0},
-    {3U, 23U, 100U, 1123U, 1133U, 1001U, 7509U, 17U, 3.9F, 12, 5, 1, 2560000U, 50.0F, 1.0F, 6769U, 0.8F, 0.2F, 0.95F, 0.05F, 0.1F, true, true, 0},
-    {4U, 24U, 100U, 1124U, 1134U, 1001U, 7509U, 11U, 0.3F, 5, 1, -1, 2048000U, 19.203208F, 2.5F, 0U, 0.8F, 0.2F, 0.95F, 0.05F, 0.1F, true, true, 0},
-    {5U, 25U, 100U, 1125U, 1135U, 1001U, 7509U, 14U, 0.5F, 8, 3, -1, 512000U, 19.203208F, 2.5F, 0U, 0.8F, 0.2F, 0.95F, 0.05F, 0.1F, true, true, 0},
-    {6U, 26U, 100U, 1126U, 1136U, 1001U, 7509U, 14U, 0.5F, 8, 3, 1, 2458010U, 19.203208F, 2.5F, 0U, 0.8F, 0.2F, 0.95F, 0.05F, 0.1F, true, true, 1},
+    {1U, 21U, 100U, 1121U, 1131U, 1001U, 7509U, 17U, 3.9F, 12, 5, -1, 2048000U, 10.0F, 4.0F, 4785U, 0.8F, 0.2F, 0.95F, 0.05F, 0.1F, 0.1F, 0.12F, true, true, 0},
+    {2U, 22U, 100U, 1122U, 1132U, 1001U, 7509U, 23U, 10.2F, 31, 10, 1, 2458010U, 50.0F, 1.0F, 9871U, 0.8F, 0.2F, 0.95F, 0.05F, 0.1F, 0.1F, 0.12F, true, true, 0},
+    {3U, 23U, 100U, 1123U, 1133U, 1001U, 7509U, 17U, 3.9F, 12, 5, 1, 2560000U, 50.0F, 1.0F, 6769U, 0.8F, 0.2F, 0.95F, 0.05F, 0.1F, 0.1F, 0.12F, true, true, 0},
+    {4U, 24U, 100U, 1124U, 1134U, 1001U, 7509U, 11U, 0.3F, 5, 1, -1, 2048000U, 19.203208F, 2.5F, 0U, 0.8F, 0.2F, 0.95F, 0.05F, 0.1F, 0.1F, 0.12F, true, true, 0},
+    {5U, 25U, 100U, 1125U, 1135U, 1001U, 7509U, 14U, 0.5F, 8, 3, -1, 512000U, 19.203208F, 2.5F, 0U, 0.8F, 0.2F, 0.95F, 0.05F, 0.1F, 0.1F, 0.12F, true, true, 0},
+    {6U, 26U, 100U, 1126U, 1136U, 1001U, 7509U, 14U, 0.5F, 8, 3, 1, 2458010U, 19.203208F, 2.5F, 0U, 0.8F, 0.2F, 0.95F, 0.05F, 0.1F, 0.1F, 0.12F, true, true, 1},
 };
 static const robot_joint_profile* const kRobotJointProfile = &kRobotJointProfiles[SR_JOINT_INDEX - 1U];
 

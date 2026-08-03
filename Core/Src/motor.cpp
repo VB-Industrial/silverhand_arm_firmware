@@ -27,16 +27,9 @@ constexpr float kServoPositionLimitRad = 2.0F * static_cast<float>(M_PI);
 constexpr float kServoKp = 4.0F;
 constexpr float kServoMaximumCorrectionVelocityRadS =
     15.0F * static_cast<float>(M_PI) / 180.0F;
-constexpr float kPositionRegisterVelocityRadS = 0.1F;
 constexpr float kPositionRegisterAccelerationRadS2 = 1.0F;
-constexpr float kMaximumServoVelocityRadS = 0.1F;
-constexpr float kMaximumDirectVelocityRadS = 0.12F;
 constexpr float kLimitAssumedDecelerationRadS2 = 1.0F;
 constexpr float kLimitReactionTimeS = 0.02F;
-constexpr float kMinimumSoftLimitWidthRad =
-    ((kMaximumDirectVelocityRadS * kMaximumDirectVelocityRadS) /
-     (2.0F * kLimitAssumedDecelerationRadS2)) +
-    (kMaximumDirectVelocityRadS * kLimitReactionTimeS);
 constexpr float kServoStopToleranceRad = 0.01F * static_cast<float>(M_PI) / 180.0F;
 constexpr float kServoResumeToleranceRad = 0.03F * static_cast<float>(M_PI) / 180.0F;
 constexpr uint32_t kServiceStopTimeoutMs = 250U;
@@ -63,6 +56,7 @@ float g_servo_tracking_velocity_rad_s = 0.0F;
 float g_direct_requested_velocity_rad_s = 0.0F;
 int32_t g_prev_fusion_tmc_steps = 0;
 int32_t g_servo_tracking_velocity_steps = -1;
+int32_t g_servo_acceleration_steps = -1;
 int32_t g_direct_applied_velocity_steps = 0;
 uint32_t g_servo_last_command_ms = 0U;
 bool g_output_encoder_available = false;
@@ -74,7 +68,7 @@ bool g_servo_target_valid = false;
 bool g_servo_at_target = false;
 bool g_servo_requires_controller = false;
 bool g_servo_service_position_tracking = false;
-bool g_position_register_motion_profile_active = false;
+bool g_custom_motion_profile_active = false;
 bool g_direct_applied_velocity_valid = false;
 motor_servo_state g_servo_state = MOTOR_SERVO_STATE_INACTIVE;
 motor_control_mode g_control_mode = MOTOR_CONTROL_MODE_HOLD;
@@ -208,8 +202,14 @@ JointLimitEnvelope joint_limit_envelope(void)
     limits.soft_lower_rad = std::min(soft_a_rad, soft_b_rad);
     limits.soft_upper_rad = std::max(soft_a_rad, soft_b_rad);
     const float travel_rad = limits.hard_upper_rad - limits.hard_lower_rad;
+    const float maximum_direct_velocity_rad_s =
+        kRobotJointProfile->maximum_direct_velocity_rad_s;
+    const float required_soft_width_rad =
+        ((maximum_direct_velocity_rad_s * maximum_direct_velocity_rad_s) /
+         (2.0F * kLimitAssumedDecelerationRadS2)) +
+        (maximum_direct_velocity_rad_s * kLimitReactionTimeS);
     const float minimum_soft_width_rad = std::min(
-        kMinimumSoftLimitWidthRad,
+        required_soft_width_rad,
         travel_rad * 0.25F);
     limits.soft_lower_rad = std::max(
         limits.soft_lower_rad,
@@ -427,7 +427,7 @@ bool command_servo_velocity(const float manipulator_velocity_rad_s)
 {
     const float limited_velocity_rad_s = limit_joint_velocity(
         manipulator_velocity_rad_s,
-        kMaximumServoVelocityRadS);
+        kRobotJointProfile->maximum_servo_velocity_rad_s);
     const float native_velocity_rad_s = manipulator_to_native_radians(limited_velocity_rad_s);
     int32_t velocity_steps = 0;
     if (!radians_to_steps_checked(
@@ -446,7 +446,7 @@ bool apply_direct_velocity(const float requested_velocity_rad_s)
 {
     const float limited_velocity_rad_s = limit_joint_velocity(
         requested_velocity_rad_s,
-        kMaximumDirectVelocityRadS);
+        kRobotJointProfile->maximum_direct_velocity_rad_s);
     const float native_velocity_rad_s = manipulator_to_native_radians(limited_velocity_rad_s);
     int32_t velocity_steps = 0;
     if (!radians_to_steps_checked(
@@ -466,10 +466,35 @@ bool apply_direct_velocity(const float requested_velocity_rad_s)
 
 void restore_default_motion_profile(void)
 {
-    if (g_position_register_motion_profile_active) {
+    if (g_custom_motion_profile_active) {
         tmc5160_apply_default_motion_profile();
-        g_position_register_motion_profile_active = false;
+        g_custom_motion_profile_active = false;
+        g_servo_acceleration_steps = -1;
     }
+}
+
+bool apply_servo_acceleration(const float acceleration_rad_s2)
+{
+    if (acceleration_rad_s2 == 0.0F) {
+        restore_default_motion_profile();
+        return true;
+    }
+
+    int32_t acceleration_steps = 0;
+    if (!radians_to_steps_checked(
+            acceleration_rad_s2,
+            static_cast<int32_t>(kRobotJointProfile->joint_full_steps),
+            &acceleration_steps) ||
+        (acceleration_steps <= 0)) {
+        return false;
+    }
+    if (!g_custom_motion_profile_active ||
+        (acceleration_steps != g_servo_acceleration_steps)) {
+        tmc5160_acceleration(static_cast<uint32_t>(acceleration_steps));
+        g_custom_motion_profile_active = true;
+        g_servo_acceleration_steps = acceleration_steps;
+    }
+    return true;
 }
 
 void start_servo_tracking(
@@ -480,7 +505,6 @@ void start_servo_tracking(
     const float velocity_rad_s,
     const bool requires_controller)
 {
-    restore_default_motion_profile();
     g_servo_target_position_rad = target_position_rad;
     g_servo_position_error_rad = target_position_rad - motor_fused_angle_manipulator();
     g_servo_command_velocity_rad_s = velocity_rad_s;
@@ -519,7 +543,7 @@ void update_servo_control(const uint32_t now_ms)
             (tracking_error_rad >= 0.0F) ? 1.0F : -1.0F;
         const float limited_tracking_velocity_rad_s = limit_joint_velocity(
             tracking_direction * g_servo_tracking_velocity_rad_s,
-            kMaximumServoVelocityRadS);
+            kRobotJointProfile->maximum_servo_velocity_rad_s);
         int32_t limited_tracking_velocity_steps = 0;
         if (!radians_to_steps_checked(
                 std::fabs(limited_tracking_velocity_rad_s),
@@ -778,6 +802,7 @@ extern "C" bool motor_command(
     if (!std::isfinite(position_rad) ||
         !std::isfinite(velocity_rad_s) ||
         !std::isfinite(acceleration_rad_s2) ||
+        (acceleration_rad_s2 < 0.0F) ||
         (position_rad < -kServoPositionLimitRad) ||
         (position_rad > kServoPositionLimitRad)) {
         return false;
@@ -790,10 +815,14 @@ extern "C" bool motor_command(
 
     const float limited_position_rad = limit_joint_target(position_rad);
     const float requested_tracking_velocity_rad_s = std::copysign(
-        std::min(std::fabs(velocity_rad_s), kMaximumServoVelocityRadS),
+        std::min(
+            std::fabs(velocity_rad_s),
+            kRobotJointProfile->maximum_servo_velocity_rad_s),
         limited_position_rad - motor_fused_angle_manipulator());
     const float limited_tracking_velocity_rad_s =
-        limit_joint_velocity(requested_tracking_velocity_rad_s, kMaximumServoVelocityRadS);
+        limit_joint_velocity(
+            requested_tracking_velocity_rad_s,
+            kRobotJointProfile->maximum_servo_velocity_rad_s);
 
     int32_t target_position_steps = 0;
     if (!manipulator_radians_to_tmc_steps(limited_position_rad, target_position_steps)) {
@@ -805,6 +834,10 @@ extern "C" bool motor_command(
             std::fabs(limited_tracking_velocity_rad_s),
             static_cast<int32_t>(kRobotJointProfile->joint_full_steps),
             &feedforward_velocity_steps)) {
+        return false;
+    }
+
+    if (!apply_servo_acceleration(acceleration_rad_s2)) {
         return false;
     }
 
@@ -895,7 +928,7 @@ extern "C" bool motor_set_position_radians(const float target_position_rad)
     int32_t acceleration_steps = 0;
     if (!manipulator_radians_to_tmc_steps(limited_target_position_rad, target_position_steps) ||
         !radians_to_steps_checked(
-            kPositionRegisterVelocityRadS,
+            kRobotJointProfile->maximum_servo_velocity_rad_s,
             static_cast<int32_t>(kRobotJointProfile->joint_full_steps),
             &velocity_steps) ||
         !radians_to_steps_checked(
@@ -909,19 +942,20 @@ extern "C" bool motor_set_position_radians(const float target_position_rad)
     g_servo_position_error_rad =
         limited_target_position_rad - motor_fused_angle_manipulator();
     g_servo_command_velocity_rad_s = std::copysign(
-        kPositionRegisterVelocityRadS,
+        kRobotJointProfile->maximum_servo_velocity_rad_s,
         g_servo_position_error_rad);
     g_servo_last_command_ms = now_ms;
     g_servo_target_valid = true;
     g_servo_at_target = false;
     g_servo_requires_controller = false;
     g_servo_service_position_tracking = true;
-    g_servo_maximum_correction_velocity_rad_s = kPositionRegisterVelocityRadS;
-    g_servo_tracking_velocity_rad_s = kPositionRegisterVelocityRadS;
+    g_servo_maximum_correction_velocity_rad_s =
+        kRobotJointProfile->maximum_servo_velocity_rad_s;
+    g_servo_tracking_velocity_rad_s = kRobotJointProfile->maximum_servo_velocity_rad_s;
     g_servo_tracking_velocity_steps = velocity_steps;
     g_servo_state = MOTOR_SERVO_STATE_TRACKING;
     tmc5160_acceleration(static_cast<uint32_t>(acceleration_steps));
-    g_position_register_motion_profile_active = true;
+    g_custom_motion_profile_active = true;
     tmc5160_position(target_position_steps, velocity_steps);
     g_control_mode = MOTOR_CONTROL_MODE_SERVO;
     return true;
@@ -936,7 +970,7 @@ extern "C" bool motor_arm(const bool armed)
     if (armed) {
         const bool enabled = g_tmc_driver.enable();
         if (enabled) {
-            g_position_register_motion_profile_active = false;
+            g_custom_motion_profile_active = false;
             sync_tmc_offset_to_encoder();
             reset_fusion_tracking(HAL_GetTick());
             g_control_mode = MOTOR_CONTROL_MODE_HOLD;
@@ -1045,12 +1079,12 @@ extern "C" bool motor_limit_get_diagnostics(motor_limit_diagnostics* const diagn
         return false;
     }
     const JointLimitEnvelope limits = joint_limit_envelope();
-    float minimum_velocity_rad_s = -kMaximumDirectVelocityRadS;
-    float maximum_velocity_rad_s = kMaximumDirectVelocityRadS;
+    float minimum_velocity_rad_s = -kRobotJointProfile->maximum_direct_velocity_rad_s;
+    float maximum_velocity_rad_s = kRobotJointProfile->maximum_direct_velocity_rad_s;
     joint_velocity_bounds(
         limits,
         motor_fused_angle_manipulator(),
-        kMaximumDirectVelocityRadS,
+        kRobotJointProfile->maximum_direct_velocity_rad_s,
         minimum_velocity_rad_s,
         maximum_velocity_rad_s);
     diagnostics->hard_lower_rad = limits.hard_lower_rad;

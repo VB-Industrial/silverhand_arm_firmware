@@ -301,8 +301,13 @@ void tmc5160_set_run_current(const uint8_t irun)
 
 void tmc5160_acceleration(uint32_t acc)
 {
-	uint8_t Tk = 65; //time constant. Acceleration equals steps/Tk see ref on p. 81 of datasheet
-	acc = (uint32_t)(acc / Tk);
+	const uint32_t time_scale = 65U; // Acceleration equals steps/time_scale; see datasheet ramp units.
+	acc /= time_scale;
+	if (acc == 0U) {
+		acc = 1U;
+	} else if (acc > 0x0000FFFFU) {
+		acc = 0x0000FFFFU;
+	}
 
 	tmc5160_set_vstart(0x0000000FU);
 	tmc5160_set_a1(acc);

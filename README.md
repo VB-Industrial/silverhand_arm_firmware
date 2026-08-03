@@ -243,7 +243,7 @@ The node exposes a compact public interface of nine Cyphal registers:
   immediately enters fused-angle SERVO settling. This one-shot service target does not require a
   controller or network heartbeat and remains held until another command,
   DIRECT mode, a fault, calibration, or reset cancels it. Its correction speed
-  is saturated at `0.1 rad/s` for every joint profile. The TMC5160 position
+  is saturated by the per-joint SERVO velocity limit. The TMC5160 position
   ramp uses `1 rad/s^2`; after the driver reports `position_reached`, the
   fused-angle P loop removes the remaining output-position error.
 - `auto_cal`: reading this trigger register starts a fully automatic low-current
@@ -296,13 +296,18 @@ Fault mask bits are:
 The per-joint `Planar.0.1` command is interpreted as a trajectory point. While
 successive position targets differ, the TMC5160 runs in position mode toward
 each target using the absolute angular velocity supplied in the message. The
-acceleration field is currently reserved and does not select another control
-mode; DIRECT velocity commands use their separate `1131`-`1136` subjects.
+acceleration field selects the TMC5160 ramp acceleration and deceleration. Zero
+requests the maximum default `A1/AMAX/DMAX/D1` profile; a finite positive value
+is converted from joint rad/s^2 to motor microsteps/s^2. Negative and non-finite
+acceleration commands are rejected. DIRECT velocity commands use their separate
+`1131`-`1136` subjects.
 
 When two successive commands contain exactly the same position, firmware
 switches to closed-loop settling against the fused output angle. A proportional
-controller (`Kp = 4 s^-1`) commands joint velocity. SERVO velocity is currently
-saturated at `0.1 rad/s`; DIRECT has a separate tested `0.12 rad/s` cap.
+controller (`Kp = 4 s^-1`) commands joint velocity. Per-joint SERVO and DIRECT
+velocity caps are configured by `maximum_servo_velocity_rad_s` and
+`maximum_direct_velocity_rad_s` in `robot_config.h`; their current defaults are
+`0.1 rad/s` and the separately tested `0.12 rad/s`.
 It stops inside `0.01 degree` and resumes correction if the output moves farther
 than `0.03 degree`. The position error is not angle-wrapped because the public
 joint coordinate intentionally covers `-2*pi` through `+2*pi`.
