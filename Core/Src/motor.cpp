@@ -29,6 +29,14 @@ constexpr float kServoMaximumCorrectionVelocityRadS =
     15.0F * static_cast<float>(M_PI) / 180.0F;
 constexpr float kPositionRegisterVelocityRadS = 0.1F;
 constexpr float kPositionRegisterAccelerationRadS2 = 1.0F;
+constexpr float kMaximumServoVelocityRadS = 0.1F;
+constexpr float kMaximumDirectVelocityRadS = 0.12F;
+constexpr float kLimitAssumedDecelerationRadS2 = 1.0F;
+constexpr float kLimitReactionTimeS = 0.02F;
+constexpr float kMinimumSoftLimitWidthRad =
+    ((kMaximumDirectVelocityRadS * kMaximumDirectVelocityRadS) /
+     (2.0F * kLimitAssumedDecelerationRadS2)) +
+    (kMaximumDirectVelocityRadS * kLimitReactionTimeS);
 constexpr float kServoStopToleranceRad = 0.01F * static_cast<float>(M_PI) / 180.0F;
 constexpr float kServoResumeToleranceRad = 0.03F * static_cast<float>(M_PI) / 180.0F;
 constexpr uint32_t kServiceStopTimeoutMs = 250U;
@@ -51,7 +59,11 @@ float g_servo_target_position_rad = 0.0F;
 float g_servo_position_error_rad = 0.0F;
 float g_servo_command_velocity_rad_s = 0.0F;
 float g_servo_maximum_correction_velocity_rad_s = kServoMaximumCorrectionVelocityRadS;
+float g_servo_tracking_velocity_rad_s = 0.0F;
+float g_direct_requested_velocity_rad_s = 0.0F;
 int32_t g_prev_fusion_tmc_steps = 0;
+int32_t g_servo_tracking_velocity_steps = -1;
+int32_t g_direct_applied_velocity_steps = 0;
 uint32_t g_servo_last_command_ms = 0U;
 bool g_output_encoder_available = false;
 bool g_output_encoder_degraded = false;
@@ -63,12 +75,21 @@ bool g_servo_at_target = false;
 bool g_servo_requires_controller = false;
 bool g_servo_service_position_tracking = false;
 bool g_position_register_motion_profile_active = false;
+bool g_direct_applied_velocity_valid = false;
 motor_servo_state g_servo_state = MOTOR_SERVO_STATE_INACTIVE;
 motor_control_mode g_control_mode = MOTOR_CONTROL_MODE_HOLD;
 
 FaultManager g_fault_manager;
 Tmc5160StateMachine g_tmc_driver;
 EncoderCalibration g_encoder_calibration;
+
+struct JointLimitEnvelope {
+    float hard_lower_rad = 0.0F;
+    float soft_lower_rad = 0.0F;
+    float soft_upper_rad = 0.0F;
+    float hard_upper_rad = 0.0F;
+    bool active = false;
+};
 
 float manipulator_to_native_radians(const float manipulator_angle_rad)
 {
@@ -154,6 +175,119 @@ float calibrated_backlash_radians(void)
 {
     const int32_t backlash_steps = std::max<int32_t>(g_encoder_calibration.data().backlash_steps, 0);
     return std::fabs(tmc_delta_output_radians(backlash_steps));
+}
+
+JointLimitEnvelope joint_limit_envelope(void)
+{
+    JointLimitEnvelope limits{};
+    int32_t hard_a_ticks = 0;
+    int32_t soft_a_ticks = 0;
+    int32_t soft_b_ticks = 0;
+    int32_t hard_b_ticks = 0;
+    if (!g_encoder_calibration.calibrated_limit_ticks(
+            hard_a_ticks,
+            soft_a_ticks,
+            soft_b_ticks,
+            hard_b_ticks)) {
+        return limits;
+    }
+
+    constexpr float kRadiansPerEncoderTick =
+        (2.0F * static_cast<float>(M_PI)) / static_cast<float>(_ENCODER_READMASK + 1);
+    const float hard_a_rad = native_to_manipulator_radians(
+        static_cast<float>(apply_output_encoder_direction(hard_a_ticks)) * kRadiansPerEncoderTick);
+    const float soft_a_rad = native_to_manipulator_radians(
+        static_cast<float>(apply_output_encoder_direction(soft_a_ticks)) * kRadiansPerEncoderTick);
+    const float soft_b_rad = native_to_manipulator_radians(
+        static_cast<float>(apply_output_encoder_direction(soft_b_ticks)) * kRadiansPerEncoderTick);
+    const float hard_b_rad = native_to_manipulator_radians(
+        static_cast<float>(apply_output_encoder_direction(hard_b_ticks)) * kRadiansPerEncoderTick);
+
+    limits.hard_lower_rad = std::min(hard_a_rad, hard_b_rad);
+    limits.hard_upper_rad = std::max(hard_a_rad, hard_b_rad);
+    limits.soft_lower_rad = std::min(soft_a_rad, soft_b_rad);
+    limits.soft_upper_rad = std::max(soft_a_rad, soft_b_rad);
+    const float travel_rad = limits.hard_upper_rad - limits.hard_lower_rad;
+    const float minimum_soft_width_rad = std::min(
+        kMinimumSoftLimitWidthRad,
+        travel_rad * 0.25F);
+    limits.soft_lower_rad = std::max(
+        limits.soft_lower_rad,
+        limits.hard_lower_rad + minimum_soft_width_rad);
+    limits.soft_upper_rad = std::min(
+        limits.soft_upper_rad,
+        limits.hard_upper_rad - minimum_soft_width_rad);
+    limits.active =
+        std::isfinite(limits.hard_lower_rad) &&
+        std::isfinite(limits.soft_lower_rad) &&
+        std::isfinite(limits.soft_upper_rad) &&
+        std::isfinite(limits.hard_upper_rad) &&
+        (limits.hard_lower_rad < limits.soft_lower_rad) &&
+        (limits.soft_lower_rad < limits.soft_upper_rad) &&
+        (limits.soft_upper_rad < limits.hard_upper_rad);
+    return limits;
+}
+
+void joint_velocity_bounds(
+    const JointLimitEnvelope& limits,
+    const float position_rad,
+    const float maximum_joint_velocity_rad_s,
+    float& minimum_velocity_rad_s,
+    float& maximum_velocity_rad_s)
+{
+    minimum_velocity_rad_s = -maximum_joint_velocity_rad_s;
+    maximum_velocity_rad_s = maximum_joint_velocity_rad_s;
+    if (!limits.active) {
+        return;
+    }
+
+    if (position_rad <= limits.hard_lower_rad) {
+        minimum_velocity_rad_s = 0.0F;
+    } else if (position_rad < limits.soft_lower_rad) {
+        const float fraction = std::clamp(
+            (position_rad - limits.hard_lower_rad) /
+                (limits.soft_lower_rad - limits.hard_lower_rad),
+            0.0F,
+            1.0F);
+        minimum_velocity_rad_s = -maximum_joint_velocity_rad_s * fraction;
+    }
+
+    if (position_rad >= limits.hard_upper_rad) {
+        maximum_velocity_rad_s = 0.0F;
+    } else if (position_rad > limits.soft_upper_rad) {
+        const float fraction = std::clamp(
+            (limits.hard_upper_rad - position_rad) /
+                (limits.hard_upper_rad - limits.soft_upper_rad),
+            0.0F,
+            1.0F);
+        maximum_velocity_rad_s = maximum_joint_velocity_rad_s * fraction;
+    }
+}
+
+float limit_joint_velocity(
+    const float requested_velocity_rad_s,
+    const float maximum_joint_velocity_rad_s)
+{
+    float minimum_velocity_rad_s = -maximum_joint_velocity_rad_s;
+    float maximum_velocity_rad_s = maximum_joint_velocity_rad_s;
+    joint_velocity_bounds(
+        joint_limit_envelope(),
+        motor_fused_angle_manipulator(),
+        maximum_joint_velocity_rad_s,
+        minimum_velocity_rad_s,
+        maximum_velocity_rad_s);
+    return std::clamp(
+        requested_velocity_rad_s,
+        minimum_velocity_rad_s,
+        maximum_velocity_rad_s);
+}
+
+float limit_joint_target(const float requested_position_rad)
+{
+    const JointLimitEnvelope limits = joint_limit_envelope();
+    return limits.active
+        ? std::clamp(requested_position_rad, limits.hard_lower_rad, limits.hard_upper_rad)
+        : requested_position_rad;
 }
 
 void sync_tmc_offset_to_encoder(void)
@@ -285,11 +419,16 @@ void clear_servo_target(void)
     g_servo_position_error_rad = 0.0F;
     g_servo_command_velocity_rad_s = 0.0F;
     g_servo_maximum_correction_velocity_rad_s = kServoMaximumCorrectionVelocityRadS;
+    g_servo_tracking_velocity_rad_s = 0.0F;
+    g_servo_tracking_velocity_steps = -1;
 }
 
 bool command_servo_velocity(const float manipulator_velocity_rad_s)
 {
-    const float native_velocity_rad_s = manipulator_to_native_radians(manipulator_velocity_rad_s);
+    const float limited_velocity_rad_s = limit_joint_velocity(
+        manipulator_velocity_rad_s,
+        kMaximumServoVelocityRadS);
+    const float native_velocity_rad_s = manipulator_to_native_radians(limited_velocity_rad_s);
     int32_t velocity_steps = 0;
     if (!radians_to_steps_checked(
             native_velocity_rad_s,
@@ -299,7 +438,29 @@ bool command_servo_velocity(const float manipulator_velocity_rad_s)
     }
 
     tmc5160_move(velocity_steps);
-    g_servo_command_velocity_rad_s = manipulator_velocity_rad_s;
+    g_servo_command_velocity_rad_s = limited_velocity_rad_s;
+    return true;
+}
+
+bool apply_direct_velocity(const float requested_velocity_rad_s)
+{
+    const float limited_velocity_rad_s = limit_joint_velocity(
+        requested_velocity_rad_s,
+        kMaximumDirectVelocityRadS);
+    const float native_velocity_rad_s = manipulator_to_native_radians(limited_velocity_rad_s);
+    int32_t velocity_steps = 0;
+    if (!radians_to_steps_checked(
+            native_velocity_rad_s,
+            static_cast<int32_t>(kRobotJointProfile->joint_full_steps),
+            &velocity_steps)) {
+        return false;
+    }
+    if (!g_direct_applied_velocity_valid ||
+        (velocity_steps != g_direct_applied_velocity_steps)) {
+        tmc5160_move(velocity_steps);
+        g_direct_applied_velocity_steps = velocity_steps;
+        g_direct_applied_velocity_valid = true;
+    }
     return true;
 }
 
@@ -329,6 +490,8 @@ void start_servo_tracking(
     g_servo_requires_controller = requires_controller;
     g_servo_service_position_tracking = false;
     g_servo_maximum_correction_velocity_rad_s = kServoMaximumCorrectionVelocityRadS;
+    g_servo_tracking_velocity_rad_s = std::fabs(velocity_rad_s);
+    g_servo_tracking_velocity_steps = std::abs(velocity_steps);
     g_servo_state = MOTOR_SERVO_STATE_TRACKING;
     tmc5160_position(target_position_steps, velocity_steps);
     g_control_mode = MOTOR_CONTROL_MODE_SERVO;
@@ -350,7 +513,38 @@ void update_servo_control(const uint32_t now_ms)
     const bool command_stream_alive =
         (now_ms - g_servo_last_command_ms) < kServoCommandTimeoutMs;
     if (g_servo_state == MOTOR_SERVO_STATE_TRACKING) {
-        if (g_servo_service_position_tracking) {
+        const float tracking_error_rad =
+            g_servo_target_position_rad - motor_fused_angle_manipulator();
+        const float tracking_direction =
+            (tracking_error_rad >= 0.0F) ? 1.0F : -1.0F;
+        const float limited_tracking_velocity_rad_s = limit_joint_velocity(
+            tracking_direction * g_servo_tracking_velocity_rad_s,
+            kMaximumServoVelocityRadS);
+        int32_t limited_tracking_velocity_steps = 0;
+        if (!radians_to_steps_checked(
+                std::fabs(limited_tracking_velocity_rad_s),
+                static_cast<int32_t>(kRobotJointProfile->joint_full_steps),
+                &limited_tracking_velocity_steps)) {
+            tmc5160_move(0);
+            clear_servo_target();
+            g_control_mode = MOTOR_CONTROL_MODE_HOLD;
+            return;
+        }
+        if (limited_tracking_velocity_steps != g_servo_tracking_velocity_steps) {
+            tmc5160_velocity(limited_tracking_velocity_steps);
+            g_servo_tracking_velocity_steps = limited_tracking_velocity_steps;
+        }
+        g_servo_command_velocity_rad_s = limited_tracking_velocity_rad_s;
+
+        if (std::fabs(tracking_error_rad) <= kServoStopToleranceRad) {
+            g_servo_service_position_tracking = false;
+            g_servo_command_velocity_rad_s = 0.0F;
+            g_servo_state = MOTOR_SERVO_STATE_SETTLING;
+        }
+
+        if (g_servo_state != MOTOR_SERVO_STATE_TRACKING) {
+            // Continue below and let the fused-angle loop enter AT_TARGET.
+        } else if (g_servo_service_position_tracking) {
             if (!tmc5160_position_reached()) {
                 return;
             }
@@ -392,6 +586,18 @@ void update_servo_control(const uint32_t now_ms)
     if (!command_servo_velocity(correction_velocity_rad_s)) {
         tmc5160_move(0);
         clear_servo_target();
+        g_control_mode = MOTOR_CONTROL_MODE_HOLD;
+    }
+}
+
+void update_direct_control(void)
+{
+    if (g_control_mode != MOTOR_CONTROL_MODE_DIRECT) {
+        return;
+    }
+    if (!apply_direct_velocity(g_direct_requested_velocity_rad_s)) {
+        tmc5160_move(0);
+        g_direct_applied_velocity_valid = false;
         g_control_mode = MOTOR_CONTROL_MODE_HOLD;
     }
 }
@@ -559,6 +765,7 @@ extern "C" void motor_update(const uint32_t now_ms)
     update_calibration(now_ms);
     update_fusion_state(now_ms);
     update_faults(now_ms);
+    update_direct_control();
     update_servo_control(now_ms);
     update_degraded_led(now_ms);
 }
@@ -581,14 +788,21 @@ extern "C" bool motor_command(
         return false;
     }
 
+    const float limited_position_rad = limit_joint_target(position_rad);
+    const float requested_tracking_velocity_rad_s = std::copysign(
+        std::min(std::fabs(velocity_rad_s), kMaximumServoVelocityRadS),
+        limited_position_rad - motor_fused_angle_manipulator());
+    const float limited_tracking_velocity_rad_s =
+        limit_joint_velocity(requested_tracking_velocity_rad_s, kMaximumServoVelocityRadS);
+
     int32_t target_position_steps = 0;
-    if (!manipulator_radians_to_tmc_steps(position_rad, target_position_steps)) {
+    if (!manipulator_radians_to_tmc_steps(limited_position_rad, target_position_steps)) {
         return false;
     }
 
     int32_t feedforward_velocity_steps = 0;
     if (!radians_to_steps_checked(
-            std::fabs(velocity_rad_s),
+            std::fabs(limited_tracking_velocity_rad_s),
             static_cast<int32_t>(kRobotJointProfile->joint_full_steps),
             &feedforward_velocity_steps)) {
         return false;
@@ -598,7 +812,7 @@ extern "C" bool motor_command(
     // Exact equality is intentional. A very slow but changing trajectory must
     // stay in feed-forward tracking rather than being mistaken for a fixed target.
     const bool same_target =
-        g_servo_target_valid && (position_rad == g_servo_target_position_rad);
+        g_servo_target_valid && (limited_position_rad == g_servo_target_position_rad);
     g_fault_manager.note_velocity_command(now_ms, false);
     if (same_target) {
         g_servo_last_command_ms = now_ms;
@@ -608,10 +822,10 @@ extern "C" bool motor_command(
     } else {
         start_servo_tracking(
             now_ms,
-            position_rad,
+            limited_position_rad,
             target_position_steps,
             feedforward_velocity_steps,
-            velocity_rad_s,
+            limited_tracking_velocity_rad_s,
             true);
     }
     g_control_mode = MOTOR_CONTROL_MODE_SERVO;
@@ -624,9 +838,18 @@ extern "C" bool motor_move(const int32_t velocity_command)
         !g_fault_manager.motion_allowed() || !g_tmc_driver.is_enabled()) {
         return false;
     }
+    const float native_velocity_rad_s = steps_to_rads(
+        velocity_command,
+        static_cast<int32_t>(kRobotJointProfile->joint_full_steps));
+    const float manipulator_velocity_rad_s =
+        native_to_manipulator_radians(native_velocity_rad_s);
     clear_servo_target();
     restore_default_motion_profile();
-    tmc5160_move(velocity_command);
+    g_direct_requested_velocity_rad_s = manipulator_velocity_rad_s;
+    g_direct_applied_velocity_valid = false;
+    if (!apply_direct_velocity(g_direct_requested_velocity_rad_s)) {
+        return false;
+    }
     g_fault_manager.note_velocity_command(HAL_GetTick(), velocity_command != 0);
     g_control_mode = (velocity_command == 0)
         ? MOTOR_CONTROL_MODE_HOLD
@@ -642,16 +865,18 @@ extern "C" bool motor_move_radians_per_second(const float velocity_rad_s)
         return false;
     }
 
-    const float native_velocity_rad_s = manipulator_to_native_radians(velocity_rad_s);
-    int32_t velocity_steps = 0;
-    if (!radians_to_steps_checked(
-            native_velocity_rad_s,
-            static_cast<int32_t>(kRobotJointProfile->joint_full_steps),
-            &velocity_steps)) {
+    clear_servo_target();
+    restore_default_motion_profile();
+    g_direct_requested_velocity_rad_s = velocity_rad_s;
+    g_direct_applied_velocity_valid = false;
+    if (!apply_direct_velocity(g_direct_requested_velocity_rad_s)) {
         return false;
     }
-
-    return motor_move(velocity_steps);
+    g_fault_manager.note_velocity_command(HAL_GetTick(), velocity_rad_s != 0.0F);
+    g_control_mode = (velocity_rad_s == 0.0F)
+        ? MOTOR_CONTROL_MODE_HOLD
+        : MOTOR_CONTROL_MODE_DIRECT;
+    return true;
 }
 
 extern "C" bool motor_set_position_radians(const float target_position_rad)
@@ -663,11 +888,12 @@ extern "C" bool motor_set_position_radians(const float target_position_rad)
         !g_fault_manager.motion_allowed() || !g_tmc_driver.is_enabled()) {
         return false;
     }
+    const float limited_target_position_rad = limit_joint_target(target_position_rad);
     const uint32_t now_ms = HAL_GetTick();
     int32_t target_position_steps = 0;
     int32_t velocity_steps = 0;
     int32_t acceleration_steps = 0;
-    if (!manipulator_radians_to_tmc_steps(target_position_rad, target_position_steps) ||
+    if (!manipulator_radians_to_tmc_steps(limited_target_position_rad, target_position_steps) ||
         !radians_to_steps_checked(
             kPositionRegisterVelocityRadS,
             static_cast<int32_t>(kRobotJointProfile->joint_full_steps),
@@ -679,9 +905,9 @@ extern "C" bool motor_set_position_radians(const float target_position_rad)
         return false;
     }
     g_fault_manager.note_velocity_command(now_ms, false);
-    g_servo_target_position_rad = target_position_rad;
+    g_servo_target_position_rad = limited_target_position_rad;
     g_servo_position_error_rad =
-        target_position_rad - motor_fused_angle_manipulator();
+        limited_target_position_rad - motor_fused_angle_manipulator();
     g_servo_command_velocity_rad_s = std::copysign(
         kPositionRegisterVelocityRadS,
         g_servo_position_error_rad);
@@ -691,6 +917,8 @@ extern "C" bool motor_set_position_radians(const float target_position_rad)
     g_servo_requires_controller = false;
     g_servo_service_position_tracking = true;
     g_servo_maximum_correction_velocity_rad_s = kPositionRegisterVelocityRadS;
+    g_servo_tracking_velocity_rad_s = kPositionRegisterVelocityRadS;
+    g_servo_tracking_velocity_steps = velocity_steps;
     g_servo_state = MOTOR_SERVO_STATE_TRACKING;
     tmc5160_acceleration(static_cast<uint32_t>(acceleration_steps));
     g_position_register_motion_profile_active = true;
@@ -808,6 +1036,31 @@ extern "C" bool motor_servo_get_diagnostics(motor_servo_diagnostics* const diagn
         ? HAL_GetTick() - g_servo_last_command_ms
         : 0U;
     diagnostics->state = g_servo_state;
+    return true;
+}
+
+extern "C" bool motor_limit_get_diagnostics(motor_limit_diagnostics* const diagnostics)
+{
+    if (diagnostics == nullptr) {
+        return false;
+    }
+    const JointLimitEnvelope limits = joint_limit_envelope();
+    float minimum_velocity_rad_s = -kMaximumDirectVelocityRadS;
+    float maximum_velocity_rad_s = kMaximumDirectVelocityRadS;
+    joint_velocity_bounds(
+        limits,
+        motor_fused_angle_manipulator(),
+        kMaximumDirectVelocityRadS,
+        minimum_velocity_rad_s,
+        maximum_velocity_rad_s);
+    diagnostics->hard_lower_rad = limits.hard_lower_rad;
+    diagnostics->soft_lower_rad = limits.soft_lower_rad;
+    diagnostics->soft_upper_rad = limits.soft_upper_rad;
+    diagnostics->hard_upper_rad = limits.hard_upper_rad;
+    diagnostics->current_position_rad = motor_fused_angle_manipulator();
+    diagnostics->minimum_velocity_rad_s = minimum_velocity_rad_s;
+    diagnostics->maximum_velocity_rad_s = maximum_velocity_rad_s;
+    diagnostics->active = limits.active;
     return true;
 }
 

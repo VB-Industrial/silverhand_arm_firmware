@@ -242,6 +242,10 @@ The node exposes the following read-only Cyphal registers:
   from `controller_node_id` in `robot_config.h` updates this state. Operational
   joint commands are accepted only from this node.
 - `control_mode`: `0` hold, `1` servo, `2` direct, `3` calibration.
+- `limit_diag`: `[active, hard_lower, soft_lower, soft_upper, hard_upper,
+  current_position, minimum_velocity, maximum_velocity]` in radians and
+  radians per second. Limits are active when stored calibration and geometric
+  zero data define a valid range.
 - `pos_set`: writing an absolute manipulator position in radians (`real32`)
   immediately enters fused-angle SERVO settling. This one-shot service target does not require a
   controller or network heartbeat and remains held until another command,
@@ -315,7 +319,8 @@ mode; DIRECT velocity commands use their separate `1131`-`1136` subjects.
 
 When two successive commands contain exactly the same position, firmware
 switches to closed-loop settling against the fused output angle. A proportional
-controller (`Kp = 4 s^-1`) commands joint velocity, saturated at `15 deg/s`.
+controller (`Kp = 4 s^-1`) commands joint velocity. SERVO velocity is currently
+saturated at `0.1 rad/s`; DIRECT has a separate tested `0.12 rad/s` cap.
 It stops inside `0.01 degree` and resumes correction if the output moves farther
 than `0.03 degree`. The position error is not angle-wrapped because the public
 joint coordinate intentionally covers `-2*pi` through `+2*pi`.
@@ -460,6 +465,29 @@ Raw DIRECT velocity commands must be refreshed at least once every 1 second
 armed. Loss of controller heartbeat has the same stop/hold behavior; heartbeats
 from other nodes continue to indicate a live network but do not keep controller
 state online.
+
+## Joint travel limits
+
+With valid stored encoder calibration and geometric zero, normal SERVO and
+DIRECT control use the manually recorded endpoints as hard limits. The stored
+calibration safety margin defines an inner soft boundary at each end. Outward
+DIRECT velocity is linearly reduced from its `0.12 rad/s` cap at the soft
+boundary to zero at the hard limit. SERVO uses the same envelope with its own
+`0.1 rad/s` cap. Inward velocity remains available at full speed. If the measured
+position is already outside a hard limit, all farther
+outward motion is blocked while recovery motion toward the valid range remains
+allowed.
+
+The stored calibration margin is expanded when necessary so the soft zone is
+at least the conservative braking distance `v^2/(2*a) + v*t_reaction`, using
+`a = 1 rad/s^2` and `t_reaction = 20 ms`. A quarter of the calibrated travel is
+the maximum expansion on very narrow joints.
+
+Position targets are saturated to the hard range. Velocity limiting is
+recomputed from the fused output position on every motor update, including
+between received DIRECT commands, so a silent sender cannot continue driving
+through a limit before the one-second command watchdog expires. Calibration
+motion retains its separate endpoint and stall protections.
 
 The hardware IWDG starts after boot-time peripheral, Cyphal, motor, and EEPROM
 initialization. Its nominal timeout is 2 seconds. Firmware refreshes it only

@@ -44,6 +44,17 @@ typedef struct motor_servo_diagnostics {
     motor_servo_state state;
 } motor_servo_diagnostics;
 
+typedef struct motor_limit_diagnostics {
+    float hard_lower_rad;
+    float soft_lower_rad;
+    float soft_upper_rad;
+    float hard_upper_rad;
+    float current_position_rad;
+    float minimum_velocity_rad_s;
+    float maximum_velocity_rad_s;
+    bool active;
+} motor_limit_diagnostics;
+
 typedef enum motor_control_mode {
     MOTOR_CONTROL_MODE_HOLD = 0,
     MOTOR_CONTROL_MODE_SERVO = 1,
@@ -71,6 +82,7 @@ uint16_t motor_encoder_raw(void);
 bool motor_encoder_get_diagnostics(motor_encoder_diagnostics* diagnostics);
 bool motor_fusion_get_diagnostics(motor_fusion_diagnostics* diagnostics);
 bool motor_servo_get_diagnostics(motor_servo_diagnostics* diagnostics);
+bool motor_limit_get_diagnostics(motor_limit_diagnostics* diagnostics);
 
 bool motor_calibration_command(int32_t command);
 bool motor_auto_calibration_start(void);

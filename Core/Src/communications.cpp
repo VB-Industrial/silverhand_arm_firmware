@@ -95,7 +95,7 @@ public:
 
 DirectVelocityReader* direct_velocity_reader;
 NodeInfoReader* nireader;
-static constexpr size_t NUMBER_OF_REGISTERS = 29;
+static constexpr size_t NUMBER_OF_REGISTERS = 30;
 
 RegistersHandler<NUMBER_OF_REGISTERS>* registers_handler;
 
@@ -329,6 +329,28 @@ void servo_diag_handler(
         diagnostics.position_error_rad,
         diagnostics.command_velocity_rad_s,
         static_cast<float>(diagnostics.command_age_ms),
+    };
+    set_register_real32_array(v_out, values, std::size(values));
+    response.persistent = false;
+    response._mutable = false;
+}
+
+void limit_diag_handler(
+    const uavcan_register_Value_1_0&,
+    uavcan_register_Value_1_0& v_out,
+    RegisterAccessResponse::Type& response)
+{
+    motor_limit_diagnostics diagnostics{};
+    motor_limit_get_diagnostics(&diagnostics);
+    const float values[] = {
+        diagnostics.active ? 1.0F : 0.0F,
+        diagnostics.hard_lower_rad,
+        diagnostics.soft_lower_rad,
+        diagnostics.soft_upper_rad,
+        diagnostics.hard_upper_rad,
+        diagnostics.current_position_rad,
+        diagnostics.minimum_velocity_rad_s,
+        diagnostics.maximum_velocity_rad_s,
     };
     set_register_real32_array(v_out, values, std::size(values));
     response.persistent = false;
@@ -642,6 +664,7 @@ void setup_cyphal(FDCAN_HandleTypeDef* handler) {
             RegisterDefinition{"fus_get", fus_get_handler},
             RegisterDefinition{"fusion_diag", fusion_diag_handler},
             RegisterDefinition{"servo_diag", servo_diag_handler},
+            RegisterDefinition{"limit_diag", limit_diag_handler},
             RegisterDefinition{"reset_reason", reset_reason_handler},
             RegisterDefinition{"fail_ack", fail_ack_handler},
             RegisterDefinition{"fault_active", fault_active_handler},

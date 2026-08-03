@@ -760,6 +760,30 @@ bool EncoderCalibration::calibrated_position_ticks(
     ticks_from_zero = corrected_position_ticks(position_ticks) - corrected_position_ticks(zero_ticks);
     return true;
 }
+
+bool EncoderCalibration::calibrated_limit_ticks(
+    int32_t& hard_a_ticks,
+    int32_t& soft_a_ticks,
+    int32_t& soft_b_ticks,
+    int32_t& hard_b_ticks) const
+{
+    if (!has_stored_data_ || !zero_valid() || (data_.manual_span_ticks == 0)) {
+        return false;
+    }
+
+    int32_t zero_ticks = 0;
+    if (!locate_position_in_stored_span(data_.zero_raw, false, zero_ticks)) {
+        return false;
+    }
+    const int32_t direction = (data_.manual_span_ticks > 0) ? 1 : -1;
+    const int32_t margin = direction * static_cast<int32_t>(data_.safe_margin_ticks);
+    const int32_t corrected_zero = corrected_position_ticks(zero_ticks);
+    hard_a_ticks = corrected_position_ticks(0) - corrected_zero;
+    soft_a_ticks = corrected_position_ticks(margin) - corrected_zero;
+    soft_b_ticks = corrected_position_ticks(data_.manual_span_ticks - margin) - corrected_zero;
+    hard_b_ticks = corrected_position_ticks(data_.manual_span_ticks) - corrected_zero;
+    return true;
+}
 int32_t EncoderCalibration::manual_total_travel() const { return manual_total_travel_; }
 bool EncoderCalibration::zero_valid() const { return data_.zero_valid != 0U; }
 uint16_t EncoderCalibration::zero_raw() const { return data_.zero_raw; }

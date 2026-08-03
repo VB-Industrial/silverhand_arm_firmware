@@ -69,6 +69,11 @@ public:
     const encoder_calibration_data& data() const;
     bool has_stored_data() const;
     bool calibrated_position_ticks(uint16_t raw, int32_t& ticks_from_zero) const;
+    bool calibrated_limit_ticks(
+        int32_t& hard_a_ticks,
+        int32_t& soft_a_ticks,
+        int32_t& soft_b_ticks,
+        int32_t& hard_b_ticks) const;
     int32_t manual_total_travel() const;
     bool zero_valid() const;
     uint16_t zero_raw() const;
