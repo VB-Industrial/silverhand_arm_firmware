@@ -20,6 +20,7 @@
 #include "main.h"
 #include "dma.h"
 #include "fdcan.h"
+#include "i2c.h"
 #include "spi.h"
 #include "tim.h"
 #include "usart.h"
@@ -99,6 +100,7 @@ int main(void)
   MX_SPI1_Init();
   MX_SPI3_Init();
   MX_TIM8_Init();
+  MX_I2C4_Init();
   /* USER CODE BEGIN 2 */
   cyphal_can_starter(&hfdcan1);
   setup_cyphal(&hfdcan1);

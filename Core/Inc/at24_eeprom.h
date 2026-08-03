@@ -12,7 +12,7 @@
 /********************************* Configuration Start *********************************/
 #define		_EEPROM_SIZE_KBIT		64       /* 64K (8 192 x 8) */
 #define		_EEPROM_I2C			hi2c4
-#define		_EEPROM_USE_FREERTOS		1  /* FreeRTOS by default */
+#define		_EEPROM_USE_FREERTOS		0
 #define		_EEPROM_ADDRESS			0xA0
 #define		_EEPROM_USE_WP_PIN		0
 #define		_EEPROM_USE_IWDG		0

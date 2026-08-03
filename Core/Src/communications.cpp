@@ -1,6 +1,7 @@
 #include "main.h"
 #include "robot_config.h"
 
+#include <algorithm>
 #include <memory>
 
 #include "cyphal/cyphal.h"
@@ -43,6 +44,7 @@ public:
     void handler(const uavcan_node_Heartbeat_1_0& hbeat, CanardRxTransfer* transfer) override {
         UNUSED(hbeat);
         UNUSED(transfer);
+        motor_note_heartbeat(HAL_GetTick());
     }
 };
 
@@ -67,7 +69,7 @@ public:
 
 JSReader* js_reader;
 NodeInfoReader* nireader;
-static constexpr size_t NUMBER_OF_REGISTERS = 9;
+static constexpr size_t NUMBER_OF_REGISTERS = 16;
 
 RegistersHandler<NUMBER_OF_REGISTERS>* registers_handler;
 
@@ -121,6 +123,19 @@ static void set_register_int32(uavcan_register_Value_1_0& value, const int32_t d
     value._tag_ = 5;
     value.integer32.value.elements[0] = data;
     value.integer32.value.count = 1;
+}
+
+static void set_register_int32_array(
+    uavcan_register_Value_1_0& value,
+    const int32_t* data,
+    const size_t count)
+{
+    value._tag_ = 5;
+    const size_t output_count = std::min(count, sizeof(value.integer32.value.elements) / sizeof(int32_t));
+    for (size_t index = 0U; index < output_count; ++index) {
+        value.integer32.value.elements[index] = data[index];
+    }
+    value.integer32.value.count = output_count;
 }
 
 static void set_register_real32(uavcan_register_Value_1_0& value, const float data)
@@ -214,8 +229,6 @@ void tmc_state_handler(
     uavcan_register_Value_1_0& v_out,
     RegisterAccessResponse::Type& response
 ) {
-    // Refresh the IOIN-backed enable state before returning the state-machine value.
-    motor_driver_enabled();
     set_register_int32(v_out, motor_driver_state());
     response.persistent = false;
     response._mutable = false;
@@ -245,6 +258,85 @@ void fail_ack_handler(
     response._mutable = true;
 }
 
+void fault_active_handler(
+    const uavcan_register_Value_1_0&,
+    uavcan_register_Value_1_0& v_out,
+    RegisterAccessResponse::Type& response
+) {
+    set_register_int32(v_out, static_cast<int32_t>(motor_fault_active()));
+    response.persistent = false;
+    response._mutable = false;
+}
+
+void fault_latched_handler(
+    const uavcan_register_Value_1_0&,
+    uavcan_register_Value_1_0& v_out,
+    RegisterAccessResponse::Type& response
+) {
+    set_register_int32(v_out, static_cast<int32_t>(motor_fault_latched()));
+    response.persistent = false;
+    response._mutable = false;
+}
+
+void fault_level_handler(
+    const uavcan_register_Value_1_0&,
+    uavcan_register_Value_1_0& v_out,
+    RegisterAccessResponse::Type& response
+) {
+    set_register_int32(v_out, motor_fail_level());
+    response.persistent = false;
+    response._mutable = false;
+}
+
+void stop_reason_handler(
+    const uavcan_register_Value_1_0&,
+    uavcan_register_Value_1_0& v_out,
+    RegisterAccessResponse::Type& response
+) {
+    set_register_int32(v_out, motor_stop_reason());
+    response.persistent = false;
+    response._mutable = false;
+}
+
+void network_state_handler(
+    const uavcan_register_Value_1_0&,
+    uavcan_register_Value_1_0& v_out,
+    RegisterAccessResponse::Type& response
+) {
+    set_register_int32(v_out, motor_network_state());
+    response.persistent = false;
+    response._mutable = false;
+}
+
+void fault_log_count_handler(
+    const uavcan_register_Value_1_0&,
+    uavcan_register_Value_1_0& v_out,
+    RegisterAccessResponse::Type& response
+) {
+    set_register_int32(v_out, static_cast<int32_t>(motor_fault_log_count()));
+    response.persistent = false;
+    response._mutable = false;
+}
+
+void fault_log_last_handler(
+    const uavcan_register_Value_1_0&,
+    uavcan_register_Value_1_0& v_out,
+    RegisterAccessResponse::Type& response
+) {
+    fault_log_record record{};
+    motor_fault_log_last(&record);
+    const int32_t values[] = {
+        static_cast<int32_t>(record.sequence),
+        static_cast<int32_t>(record.uptime_ms),
+        static_cast<int32_t>(record.fault_mask),
+        static_cast<int32_t>(record.tmc_gstat),
+        static_cast<int32_t>(record.tmc_drv_status),
+    };
+    set_register_int32_array(v_out, values, sizeof(values) / sizeof(values[0]));
+    response.persistent = false;
+    response._mutable = false;
+}
+
 void send_JS(void) {             //float* pos, float* vel, float* eff
 	static CanardTransferID int_transfer_id = 0;
 	reg_udral_physics_kinematics_rotation_Planar_0_1 js_msg =
@@ -263,11 +355,19 @@ void send_JS(void) {             //float* pos, float* vel, float* eff
 void heartbeat() {
 	static CanardTransferID hbeat_transfer_id = 0;
 	static uint32_t uptime = 0;
+    const int32_t fault_level = motor_fail_level();
+    const uint8_t health = (fault_level <= 0)
+        ? uavcan_node_Health_1_0_NOMINAL
+        : ((fault_level == 1)
+            ? uavcan_node_Health_1_0_ADVISORY
+            : ((fault_level == 2)
+                ? uavcan_node_Health_1_0_CAUTION
+                : uavcan_node_Health_1_0_WARNING));
     uavcan_node_Heartbeat_1_0 heartbeat_msg = {
         .uptime = uptime,
-        .health = {uavcan_node_Health_1_0_NOMINAL},
+        .health = {health},
         .mode = {uavcan_node_Mode_1_0_OPERATIONAL},
-        .vendor_specific_status_code = 0
+        .vendor_specific_status_code = static_cast<uint8_t>(motor_fault_active() & 0xFFU)
     };
     interface->send_msg<HBeat>(
 		&heartbeat_msg,
@@ -295,6 +395,13 @@ void setup_cyphal(FDCAN_HandleTypeDef* handler) {
             RegisterDefinition{"tmc_error", tmc_error_handler},
             RegisterDefinition{"fus_get", fus_get_handler},
             RegisterDefinition{"fail_ack", fail_ack_handler},
+            RegisterDefinition{"fault_active", fault_active_handler},
+            RegisterDefinition{"fault_latched", fault_latched_handler},
+            RegisterDefinition{"fault_level", fault_level_handler},
+            RegisterDefinition{"stop_reason", stop_reason_handler},
+            RegisterDefinition{"network_state", network_state_handler},
+            RegisterDefinition{"fault_log_count", fault_log_count_handler},
+            RegisterDefinition{"fault_log_last", fault_log_last_handler},
         },
         interface
     );

@@ -2,10 +2,6 @@
 
 #include "main.h"
 
-extern "C" {
-#include "tmc5160.h"
-}
-
 namespace
 {
 constexpr uint32_t kGstatClearMask = 0x7UL;
@@ -31,6 +27,7 @@ bool Tmc5160StateMachine::enable()
     }
 
     state_ = Tmc5160State::Enabling;
+    fault_snapshot_ = {};
     if (!configure_while_disabled()) {
         enter_fault(error_);
         return false;
@@ -42,11 +39,15 @@ bool Tmc5160StateMachine::enable()
     tmc5160_arm();
     HAL_Delay(kEnableStabilizationDelayMs);
 
-    if (!verify_driver_enable_pin(true)) {
+    if (!refresh_health_snapshot()) {
+        enter_fault(Tmc5160Error::Communication);
+        return false;
+    }
+    if (!driver_enabled_readback_) {
         enter_fault(Tmc5160Error::EnabledPinReadback);
         return false;
     }
-    if (tmc5160_has_critical_fault()) {
+    if ((fault_snapshot_.flags & TMC5160_CRITICAL_FAULT_MASK) != 0U) {
         enter_fault(Tmc5160Error::CriticalDriverStatus);
         return false;
     }
@@ -60,7 +61,12 @@ bool Tmc5160StateMachine::enable()
 bool Tmc5160StateMachine::disable()
 {
     if (state_ == Tmc5160State::Disabled) {
-        if (verify_driver_enable_pin(false)) {
+        bool enabled = false;
+        if (!tmc5160_read_driver_enabled(&enabled)) {
+            enter_fault(Tmc5160Error::Communication);
+            return false;
+        }
+        if (!enabled) {
             return true;
         }
         enter_fault(Tmc5160Error::DisabledPinReadback);
@@ -77,7 +83,12 @@ bool Tmc5160StateMachine::disable()
 
     tmc5160_disarm();
     HAL_Delay(1U);
-    if (!verify_driver_enable_pin(false)) {
+    bool enabled = false;
+    if (!tmc5160_read_driver_enabled(&enabled)) {
+        enter_fault(Tmc5160Error::Communication);
+        return false;
+    }
+    if (enabled) {
         enter_fault(Tmc5160Error::DisabledPinReadback);
         return false;
     }
@@ -87,20 +98,9 @@ bool Tmc5160StateMachine::disable()
     return true;
 }
 
-bool Tmc5160StateMachine::is_enabled()
+bool Tmc5160StateMachine::is_enabled() const
 {
-    if (state_ != Tmc5160State::Enabled) {
-        return false;
-    }
-    if (!verify_driver_enable_pin(true)) {
-        enter_fault(Tmc5160Error::EnabledPinReadback);
-        return false;
-    }
-    if (tmc5160_has_critical_fault()) {
-        enter_fault(Tmc5160Error::CriticalDriverStatus);
-        return false;
-    }
-    return true;
+    return state_ == Tmc5160State::Enabled;
 }
 
 void Tmc5160StateMachine::update(const uint32_t now_ms)
@@ -111,9 +111,11 @@ void Tmc5160StateMachine::update(const uint32_t now_ms)
     }
     last_status_update_ms_ = now_ms;
 
-    if (!verify_driver_enable_pin(true)) {
+    if (!refresh_health_snapshot()) {
+        enter_fault(Tmc5160Error::Communication);
+    } else if (!driver_enabled_readback_) {
         enter_fault(Tmc5160Error::EnabledPinReadback);
-    } else if (tmc5160_has_critical_fault()) {
+    } else if ((fault_snapshot_.flags & TMC5160_CRITICAL_FAULT_MASK) != 0U) {
         enter_fault(Tmc5160Error::CriticalDriverStatus);
     }
 }
@@ -128,15 +130,21 @@ Tmc5160Error Tmc5160StateMachine::error() const
     return error_;
 }
 
+const tmc5160_fault_snapshot& Tmc5160StateMachine::fault_snapshot() const
+{
+    return fault_snapshot_;
+}
+
 bool Tmc5160StateMachine::configure_while_disabled()
 {
     tmc5160_init(static_cast<int8_t>(initial_current_));
 
-    if (!tmc5160_communication_ok()) {
+    bool enabled = false;
+    if (!tmc5160_read_driver_enabled(&enabled)) {
         error_ = Tmc5160Error::Communication;
         return false;
     }
-    if (tmc5160_driver_enabled_readback()) {
+    if (enabled) {
         error_ = Tmc5160Error::DisabledPinReadback;
         return false;
     }
@@ -147,10 +155,13 @@ bool Tmc5160StateMachine::configure_while_disabled()
     return true;
 }
 
-bool Tmc5160StateMachine::verify_driver_enable_pin(const bool expected_enabled) const
+bool Tmc5160StateMachine::refresh_health_snapshot()
 {
-    return tmc5160_communication_ok() &&
-           (tmc5160_driver_enabled_readback() == expected_enabled);
+    tmc5160_health_snapshot snapshot{};
+    const bool success = tmc5160_health_check(&snapshot);
+    fault_snapshot_ = snapshot.faults;
+    driver_enabled_readback_ = snapshot.driver_enabled;
+    return success;
 }
 
 void Tmc5160StateMachine::enter_fault(const Tmc5160Error error)

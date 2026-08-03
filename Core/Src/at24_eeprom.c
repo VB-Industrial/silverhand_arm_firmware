@@ -10,7 +10,7 @@
 #include "i2c.h"
 
 
-#if (USE_FREERTOS == 1)
+#if (_EEPROM_USE_FREERTOS == 1)
 #include "cmsis_os.h"
 #define at24_delay(x)   osDelay(x)
 #else
@@ -26,6 +26,17 @@
 #endif
 
 static uint8_t at24_lock = 0;
+
+static int at24_waitReady(uint32_t startTime, uint32_t timeout)
+{
+  while (HAL_I2C_IsDeviceReady(&_EEPROM_I2C, _EEPROM_ADDRESS, 1, 1) != HAL_OK)
+  {
+    if (HAL_GetTick() - startTime >= timeout)
+      return false;
+    at24_delay(1);
+  }
+  return true;
+}
 
 /**
   * @brief  Checks if memory device is ready for communication.
@@ -66,25 +77,29 @@ int at24_write(uint16_t address, uint8_t *data, uint8_t len, uint32_t timeout)
 
   while (1)
   {
-	#if (EEPROM_USE_IWDG)
+    #if (_EEPROM_USE_IWDG)
 		HAL_IWDG_Refresh(&_EEPROM_IWDG);
 	#endif
     w = _EEPROM_PSIZE - (address  % _EEPROM_PSIZE);
     if (w > len)
       w = len;
     #if ((_EEPROM_SIZE_KBIT==1) || (_EEPROM_SIZE_KBIT==2))
-    if (HAL_I2C_Mem_Write(&_EEPROM_I2C, _EEPROM_ADDRESS, address, I2C_MEMADD_SIZE_8BIT, data, w, 100) == HAL_OK)
+    if (HAL_I2C_Mem_Write(&_EEPROM_I2C, _EEPROM_ADDRESS, address, I2C_MEMADD_SIZE_8BIT, data, w, timeout) == HAL_OK)
     #elif (_EEPROM_SIZE_KBIT==4)
-    if (HAL_I2C_Mem_Write(&_EEPROM_I2C, _EEPROM_ADDRESS | ((address & 0x0100) >> 7), (address & 0xff), I2C_MEMADD_SIZE_8BIT, data, w, 100) == HAL_OK)
+    if (HAL_I2C_Mem_Write(&_EEPROM_I2C, _EEPROM_ADDRESS | ((address & 0x0100) >> 7), (address & 0xff), I2C_MEMADD_SIZE_8BIT, data, w, timeout) == HAL_OK)
     #elif (_EEPROM_SIZE_KBIT==8)
-    if (HAL_I2C_Mem_Write(&_EEPROM_I2C, _EEPROM_ADDRESS | ((address & 0x0300) >> 7), (address & 0xff), I2C_MEMADD_SIZE_8BIT, data, w, 100) == HAL_OK)
+    if (HAL_I2C_Mem_Write(&_EEPROM_I2C, _EEPROM_ADDRESS | ((address & 0x0300) >> 7), (address & 0xff), I2C_MEMADD_SIZE_8BIT, data, w, timeout) == HAL_OK)
     #elif (_EEPROM_SIZE_KBIT==16)
-    if (HAL_I2C_Mem_Write(&_EEPROM_I2C, _EEPROM_ADDRESS | ((address & 0x0700) >> 7), (address & 0xff), I2C_MEMADD_SIZE_8BIT, data, w, 100) == HAL_OK)
+    if (HAL_I2C_Mem_Write(&_EEPROM_I2C, _EEPROM_ADDRESS | ((address & 0x0700) >> 7), (address & 0xff), I2C_MEMADD_SIZE_8BIT, data, w, timeout) == HAL_OK)
     #else
-    if (HAL_I2C_Mem_Write(&_EEPROM_I2C, _EEPROM_ADDRESS, address, I2C_MEMADD_SIZE_16BIT, data, w, 100) == HAL_OK)
+    if (HAL_I2C_Mem_Write(&_EEPROM_I2C, _EEPROM_ADDRESS, address, I2C_MEMADD_SIZE_16BIT, data, w, timeout) == HAL_OK)
     #endif
     {
-      at24_delay(1);
+      if (at24_waitReady(startTime, timeout) == false)
+      {
+        at24_lock = 0;
+        return false;
+      }
       len -= w;
       data += w;
       address += w;
@@ -124,7 +139,7 @@ int at24_write(uint16_t address, uint8_t *data, uint8_t len, uint32_t timeout)
 int at24_read(uint16_t address, uint8_t *data, uint8_t len, uint32_t timeout)
 {
 	at24_delay(1);
-  #if (EEPROM_USE_IWDG)
+  #if (_EEPROM_USE_IWDG)
 		HAL_IWDG_Refresh(&_EEPROM_IWDG);
   #endif
   if (at24_lock == 1)

@@ -365,16 +365,24 @@ void tmc5160_clear_gstat(uint32_t flags)
 	tmc5160_write_reg32(TMC5160_REG_GSTAT | 0x80U, flags & 0x7U);
 }
 
-bool tmc5160_communication_ok(void)
+static bool tmc5160_read_ioin(uint32_t* ioin)
 {
-	const uint32_t ioin = (uint32_t)tmc5160_read_reg(TMC5160_REG_IOIN);
-	return (ioin & 0xFF000000U) == 0x30000000U;
+	if (ioin == NULL) {
+		return false;
+	}
+	*ioin = (uint32_t)tmc5160_read_reg(TMC5160_REG_IOIN);
+	return (*ioin & 0xFF000000U) == 0x30000000U;
 }
 
-bool tmc5160_driver_enabled_readback(void)
+bool tmc5160_read_driver_enabled(bool* enabled)
 {
-	const uint32_t ioin = (uint32_t)tmc5160_read_reg(TMC5160_REG_IOIN);
-	return (ioin & (1UL << 4U)) == 0U;
+	uint32_t ioin = 0U;
+	if ((enabled == NULL) ||
+	    (!tmc5160_read_ioin(&ioin) && !tmc5160_read_ioin(&ioin))) {
+		return false;
+	}
+	*enabled = (ioin & (1UL << 4U)) == 0U;
+	return true;
 }
 
 bool tmc5160_configuration_matches(void)
@@ -384,15 +392,41 @@ bool tmc5160_configuration_matches(void)
 	       (((uint32_t)tmc5160_read_reg(TMC5160_REG_RAMPMODE) & 0x3U) == 0U);
 }
 
-bool tmc5160_has_critical_fault(void)
+bool tmc5160_health_check(tmc5160_health_snapshot* snapshot)
 {
-	const uint32_t gstat = (uint32_t)tmc5160_read_reg(TMC5160_REG_GSTAT);
-	const uint32_t driver_status = (uint32_t)tmc5160_read_reg(TMC5160_REG_DRV_STATUS);
-	const uint32_t gstat_critical = (1UL << 1U) | (1UL << 2U);
-	const uint32_t driver_critical =
-		(1UL << 28U) | (1UL << 27U) | (1UL << 25U) | (1UL << 13U) | (1UL << 12U);
+	if (snapshot == NULL) {
+		return false;
+	}
+	snapshot->faults.flags = 0U;
+	snapshot->faults.gstat = 0U;
+	snapshot->faults.driver_status = 0U;
+	snapshot->driver_enabled = false;
+	if (!tmc5160_read_driver_enabled(&snapshot->driver_enabled)) {
+		return false;
+	}
 
-	return ((gstat & gstat_critical) != 0U) || ((driver_status & driver_critical) != 0U);
+	snapshot->faults.gstat = (uint32_t)tmc5160_read_reg(TMC5160_REG_GSTAT);
+	snapshot->faults.driver_status = (uint32_t)tmc5160_read_reg(TMC5160_REG_DRV_STATUS);
+
+	if ((snapshot->faults.gstat & (1UL << 1U)) != 0U) {
+		snapshot->faults.flags |= TMC5160_FAULT_DRIVER_ERROR;
+	}
+	if ((snapshot->faults.gstat & (1UL << 2U)) != 0U) {
+		snapshot->faults.flags |= TMC5160_FAULT_UNDERVOLTAGE;
+	}
+	if ((snapshot->faults.driver_status & (1UL << 26U)) != 0U) {
+		snapshot->faults.flags |= TMC5160_FAULT_OVERTEMP_WARNING;
+	}
+	if ((snapshot->faults.driver_status & (1UL << 25U)) != 0U) {
+		snapshot->faults.flags |= TMC5160_FAULT_OVERTEMP;
+	}
+	if ((snapshot->faults.driver_status & ((1UL << 28U) | (1UL << 27U))) != 0U) {
+		snapshot->faults.flags |= TMC5160_FAULT_SHORT_TO_GROUND;
+	}
+	if ((snapshot->faults.driver_status & ((1UL << 13U) | (1UL << 12U))) != 0U) {
+		snapshot->faults.flags |= TMC5160_FAULT_SHORT_TO_SUPPLY;
+	}
+	return true;
 }
 
 void tmc5160_init(int8_t init_irun)

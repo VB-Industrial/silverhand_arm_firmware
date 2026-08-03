@@ -219,3 +219,42 @@ Other useful entry points:
   VS Code.
 
 All VS Code build and OpenOCD tasks run inside WSL and do not invoke `sudo`.
+
+## Runtime diagnostics
+
+The node exposes the following read-only Cyphal registers:
+
+- `fault_active` and `fault_latched`: current and session-latched fault masks.
+- `fault_level`: `0` nominal, `1` warning, `2` degraded, `3` fault.
+- `stop_reason`: last commanded stop cause: `0` none, `1` network offline,
+  `2` position mismatch, `3` TMC5160 fault.
+- `network_state`: `0` starting, `1` online, `2` offline. A heartbeat from any
+  node marks the network online.
+- `fault_log_count`: sequence number of the latest persistent fault record.
+- `fault_log_last`: `[sequence, uptime_ms, fault_mask, GSTAT, DRV_STATUS]`.
+
+Fault mask bits are:
+
+| Bit | Meaning |
+| --- | --- |
+| 0 | Output encoder and TMC5160 position mismatch |
+| 1 | TMC5160 communication failure |
+| 2 | TMC5160 enable-pin readback failure |
+| 3 | TMC5160 configuration readback failure |
+| 4 | TMC5160 charge-pump undervoltage |
+| 5 | TMC5160 overtemperature warning |
+| 6 | TMC5160 overtemperature shutdown |
+| 7 | TMC5160 short circuit |
+| 8 | Unclassified critical TMC5160 driver status |
+| 9 | EEPROM unavailable |
+| 10 | EEPROM fault-log write failure |
+
+Only overtemperature shutdowns and short circuits are written to EEPROM.
+Network, communication and position-mismatch events remain session-local. The
+AT24C64 fault log uses the final 2 KiB as a 64-record ring; the first 6 KiB are
+reserved for future calibration data.
+
+While the driver is enabled, firmware checks `IOIN`, `GSTAT` and `DRV_STATUS`
+every 100 ms. An invalid `IOIN` response is retried immediately; if both reads
+fail, firmware raises `DRV_EN` and enters the TMC communication-fault state.
+Configuration registers are verified only after driver initialization or rearm.

@@ -5,7 +5,7 @@
 
 #include <cmath>
 
-#include "alert_monitor.h"
+#include "fault_manager.hpp"
 #include "tmc5160_state.hpp"
 
 extern "C" {
@@ -39,7 +39,7 @@ float g_startup_tmc_angle_offset_rad = 0.0F;
 bool g_output_encoder_available = false;
 bool g_output_encoder_degraded = false;
 
-AlertMonitor g_alert_monitor;
+FaultManager g_fault_manager;
 Tmc5160StateMachine g_tmc_driver;
 
 float manipulator_to_native_radians(const float manipulator_angle_rad)
@@ -199,23 +199,18 @@ void update_encoder_status(const uint32_t now_ms)
     }
 }
 
-void update_alerts(const uint32_t now_ms)
+void update_faults(const uint32_t now_ms)
 {
-    if (!g_output_encoder_available) {
-        return;
-    }
-
-    const AlertMonitor::UpdateResult result = g_alert_monitor.update(
+    const FaultManager::UpdateResult result = g_fault_manager.update(
         now_ms,
         g_output_encoder_available,
         encoder_fused_angle_radians(),
-        tmc_corrected_angle_radians());
+        tmc_corrected_angle_radians(),
+        g_tmc_driver.error(),
+        g_tmc_driver.fault_snapshot());
 
     if (result.stop_motion) {
         tmc5160_move(0);
-    }
-    if (result.sync_offset) {
-        sync_tmc_offset_to_encoder();
     }
 }
 
@@ -236,6 +231,7 @@ extern "C" void motor_init(void)
 {
     const uint32_t now_ms = HAL_GetTick();
 
+    g_fault_manager.initialize(now_ms, kRobotJointProfile->joint_index);
     g_tmc_driver.initialize(static_cast<uint8_t>(kRobotJointProfile->init_irun));
 
     g_zero_enc_runtime = kRobotJointProfile->default_zero_enc;
@@ -267,7 +263,7 @@ extern "C" void motor_update(const uint32_t now_ms)
 
     update_encoder_status(now_ms);
     update_fusion_state(now_ms);
-    update_alerts(now_ms);
+    update_faults(now_ms);
     update_degraded_led(now_ms);
 }
 
@@ -276,7 +272,7 @@ extern "C" void motor_command(
     const float velocity_rad_s,
     const float acceleration_rad_s2)
 {
-    if (!g_alert_monitor.motion_allowed() || !g_tmc_driver.is_enabled()) {
+    if (!g_fault_manager.remote_motion_allowed() || !g_tmc_driver.is_enabled()) {
         return;
     }
 
@@ -305,7 +301,7 @@ extern "C" void motor_command(
 
 extern "C" void motor_move(const int32_t velocity_command)
 {
-    if (!g_alert_monitor.motion_allowed() || !g_tmc_driver.is_enabled()) {
+    if (!g_fault_manager.motion_allowed() || !g_tmc_driver.is_enabled()) {
         return;
     }
     tmc5160_move(velocity_command);
@@ -313,7 +309,7 @@ extern "C" void motor_move(const int32_t velocity_command)
 
 extern "C" void motor_set_position_steps(const int32_t target_position_steps)
 {
-    if (!g_alert_monitor.motion_allowed() || !g_tmc_driver.is_enabled()) {
+    if (!g_fault_manager.motion_allowed() || !g_tmc_driver.is_enabled()) {
         return;
     }
     tmc5160_apply_default_motion_profile();
@@ -347,6 +343,11 @@ extern "C" int32_t motor_driver_error(void)
     return static_cast<int32_t>(g_tmc_driver.error());
 }
 
+extern "C" void motor_note_heartbeat(const uint32_t now_ms)
+{
+    g_fault_manager.note_heartbeat(now_ms);
+}
+
 extern "C" int32_t motor_position_steps(void)
 {
     return tmc5160_position_read();
@@ -374,14 +375,44 @@ extern "C" float motor_fused_velocity_manipulator(void)
 
 extern "C" bool motor_ack_fail(void)
 {
-    const bool acked = g_alert_monitor.ack_fail();
-    if (acked) {
+    const bool sync_offset = g_fault_manager.acknowledge();
+    if (sync_offset) {
         sync_tmc_offset_to_encoder();
     }
-    return acked;
+    return true;
 }
 
 extern "C" int32_t motor_fail_level(void)
 {
-    return g_alert_monitor.current_level();
+    return static_cast<int32_t>(g_fault_manager.level());
+}
+
+extern "C" uint32_t motor_fault_active(void)
+{
+    return g_fault_manager.active_faults();
+}
+
+extern "C" uint32_t motor_fault_latched(void)
+{
+    return g_fault_manager.latched_faults();
+}
+
+extern "C" int32_t motor_network_state(void)
+{
+    return static_cast<int32_t>(g_fault_manager.network_state());
+}
+
+extern "C" int32_t motor_stop_reason(void)
+{
+    return static_cast<int32_t>(g_fault_manager.stop_reason());
+}
+
+extern "C" uint32_t motor_fault_log_count(void)
+{
+    return g_fault_manager.log_count();
+}
+
+extern "C" bool motor_fault_log_last(fault_log_record* record)
+{
+    return (record != nullptr) && g_fault_manager.last_log_record(*record);
 }

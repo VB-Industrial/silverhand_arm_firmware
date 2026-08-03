@@ -49,6 +49,29 @@
 #define TMC5160_REG_CHOPCONF     0xECU
 #define TMC5160_REG_PWMCONF      0xF0U
 
+#define TMC5160_FAULT_UNDERVOLTAGE       (1UL << 0U)
+#define TMC5160_FAULT_OVERTEMP_WARNING   (1UL << 1U)
+#define TMC5160_FAULT_OVERTEMP           (1UL << 2U)
+#define TMC5160_FAULT_SHORT_TO_GROUND    (1UL << 3U)
+#define TMC5160_FAULT_SHORT_TO_SUPPLY    (1UL << 4U)
+#define TMC5160_FAULT_DRIVER_ERROR       (1UL << 5U)
+
+#define TMC5160_CRITICAL_FAULT_MASK \
+    (TMC5160_FAULT_UNDERVOLTAGE | TMC5160_FAULT_OVERTEMP | \
+     TMC5160_FAULT_SHORT_TO_GROUND | TMC5160_FAULT_SHORT_TO_SUPPLY | \
+     TMC5160_FAULT_DRIVER_ERROR)
+
+typedef struct tmc5160_fault_snapshot {
+    uint32_t flags;
+    uint32_t gstat;
+    uint32_t driver_status;
+} tmc5160_fault_snapshot;
+
+typedef struct tmc5160_health_snapshot {
+    tmc5160_fault_snapshot faults;
+    bool driver_enabled;
+} tmc5160_health_snapshot;
+
 /**
   * @brief  Read driver register into given var
   * @param  given variable by ref
@@ -89,13 +112,11 @@ int32_t tmc5160_read_reg(uint8_t reg_addr);
 
 void tmc5160_clear_gstat(uint32_t flags);
 
-bool tmc5160_communication_ok(void);
-
-bool tmc5160_driver_enabled_readback(void);
+bool tmc5160_read_driver_enabled(bool* enabled);
 
 bool tmc5160_configuration_matches(void);
 
-bool tmc5160_has_critical_fault(void);
+bool tmc5160_health_check(tmc5160_health_snapshot* snapshot);
 
 void tmc5160_effort(double effort, float max_effort, int8_t max_irun_scaler, int8_t init_irun);
 

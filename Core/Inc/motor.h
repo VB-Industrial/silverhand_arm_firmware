@@ -4,6 +4,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "fault_log.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -18,6 +20,7 @@ bool motor_arm(bool armed);
 bool motor_driver_enabled(void);
 int32_t motor_driver_state(void);
 int32_t motor_driver_error(void);
+void motor_note_heartbeat(uint32_t now_ms);
 
 int32_t motor_position_steps(void);
 int32_t motor_velocity_steps(void);
@@ -28,6 +31,12 @@ float motor_fused_velocity_manipulator(void);
 
 bool motor_ack_fail(void);
 int32_t motor_fail_level(void);
+uint32_t motor_fault_active(void);
+uint32_t motor_fault_latched(void);
+int32_t motor_network_state(void);
+int32_t motor_stop_reason(void);
+uint32_t motor_fault_log_count(void);
+bool motor_fault_log_last(fault_log_record* record);
 
 #ifdef __cplusplus
 }

@@ -30,7 +30,8 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/cmake/stm32cubemx/CMakeLists.txt")
 endif()
 
 set(USER_SOURCES
-    Core/Src/alert_monitor.cpp
+    Core/Src/fault_manager.cpp
+    Core/Src/fault_log.c
     Core/Src/communications.cpp
     Core/Src/motor.cpp
     Core/Src/tmc5160_state.cpp
