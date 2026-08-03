@@ -239,6 +239,8 @@ void update_calibration(const uint32_t now_ms)
         (calibration_state == EncoderCalibrationState::MoveToA) ||
         (calibration_state == EncoderCalibrationState::SettleAtA) ||
         (calibration_state == EncoderCalibrationState::SweepToB) ||
+        (calibration_state == EncoderCalibrationState::SettleAtB) ||
+        (calibration_state == EncoderCalibrationState::ReverseSweepToA) ||
         (calibration_state == EncoderCalibrationState::Processing) ||
         (calibration_state == EncoderCalibrationState::Saving) ||
         (calibration_state == EncoderCalibrationState::AutoSeekLimitA) ||
@@ -623,7 +625,7 @@ extern "C" int32_t motor_calibration_progress(void)
 
 extern "C" void motor_calibration_result(int32_t* const values, const uint8_t capacity, uint8_t* const count)
 {
-    if ((values == nullptr) || (count == nullptr) || (capacity < 12U)) {
+    if ((values == nullptr) || (count == nullptr) || (capacity < 13U)) {
         return;
     }
     const encoder_calibration_data& data = g_encoder_calibration.data();
@@ -638,8 +640,9 @@ extern "C" void motor_calibration_result(int32_t* const values, const uint8_t ca
     values[8] = data.tmc_span_steps;
     values[9] = data.zero_valid;
     values[10] = data.zero_raw;
-    values[11] = g_encoder_calibration.manual_total_travel();
-    *count = 12U;
+    values[11] = data.backlash_steps;
+    values[12] = g_encoder_calibration.manual_total_travel();
+    *count = 13U;
 }
 
 extern "C" float motor_fused_angle_manipulator(void)

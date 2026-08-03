@@ -442,7 +442,7 @@ void calibration_result_handler(
     uavcan_register_Value_1_0& v_out,
     RegisterAccessResponse::Type& response)
 {
-    int32_t values[12]{};
+    int32_t values[13]{};
     uint8_t count = 0U;
     motor_calibration_result(values, static_cast<uint8_t>(std::size(values)), &count);
     set_register_int32_array(v_out, values, count);

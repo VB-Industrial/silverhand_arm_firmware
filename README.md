@@ -256,7 +256,9 @@ The node exposes the following read-only Cyphal registers:
 - `cal_state`: `[state, error, progress_percent]`.
 - `cal_result`: `[state, error, progress, limit_a_raw, limit_b_raw,
   signed_manual_span, safe_margin, point_count, tmc_span_steps,
-  zero_valid, zero_raw, manual_total_travel]`.
+  zero_valid, zero_raw, backlash_steps, manual_total_travel]`. The reported
+  TMC span is the signed average of the forward and reverse measurement spans;
+  backlash is a positive mean motor-step difference between both directions.
 - `enc_status`: `[last_read_ok, HAL_status, transfer_count, error_count,
   raw_16bit_frame, has_valid_angle]`. The working single-frame AS50xx exchange
   is intentionally unchanged; a failed transfer preserves the last valid angle.
@@ -295,12 +297,15 @@ builds and stores a correction table but does not yet apply it to joint state.
    crossings through `0/16383` and a mechanical range of up to two encoder
    revolutions.
 4. Remove hands and fixtures, then write `cal_next=1` again. Firmware arms at
-   limited current, moves back inside limit A, settles, and performs one
-   constant-speed measurement pass toward limit B.
+   limited current, moves back inside limit A, settles, and performs
+   constant-speed measurement passes from A to B and back to A.
 5. A table of up to 256 uniformly spaced `int16` correction points is checked
-   for monotonicity and saved to redundant EEPROM slots A/B with version,
-   sequence, CRC, valid marker, and readback verification. Completion and any
-   abort leave the driver disarmed; reboot before normal operation.
+   for monotonicity. The mean of the normalized forward/reverse tables captures
+   encoder nonlinearity, while their mean TMC step difference over the central
+   80 percent of travel estimates backlash. Both are saved to redundant EEPROM
+   slots A/B with version, sequence, CRC, valid marker, and readback
+   verification. Completion and any abort leave the driver disarmed; reboot
+   before normal operation.
 
 The automatic path stays inside the manually captured physical limits. Its
 margin is 2 percent of the observed span, clamped to 16...200 encoder ticks.
@@ -322,7 +327,8 @@ Calibration states are `0` idle, `1` wait limit A, `2` wait limit B, `3`
 ready, `4` move to A, `5` settle, `6` sweep to B, `7` processing, `8` saving,
 `9` complete, `10` failed, and `11` aborted.
 Automatic discovery additionally uses `12` seek limit A, `13` back off A, and
-`14` seek limit B.
+`14` seek limit B. Bidirectional measurement uses `15` settle at B and `16`
+sweep back to A.
 
 After calibrating the limits/table, place the joint at its geometric zero and
 invoke the trigger without a value:
@@ -335,8 +341,9 @@ This command is accepted only in calibration state `0` with a valid stored
 encoder calibration and a working output encoder. It stops and waits for the
 motor, persists the encoder zero in the same redundant EEPROM record, then
 sets the TMC5160 position and the reported joint angle to zero. Existing
-version-1 calibration records are read without losing their limit/table data;
-the first successful `zero_cal` rewrites the selected slot using version 2.
+version-1 and version-2 calibration records are read without losing their
+limit, table, or geometric-zero data; the next successful calibration write
+uses version 3.
 
 Only overtemperature shutdowns and short circuits are written to EEPROM.
 Network, communication and position-mismatch events remain session-local. The

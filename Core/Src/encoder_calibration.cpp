@@ -166,6 +166,7 @@ EncoderCalibration::Action EncoderCalibration::update(
     }
     if (((state_ == EncoderCalibrationState::MoveToA) ||
          (state_ == EncoderCalibrationState::SweepToB) ||
+         (state_ == EncoderCalibrationState::ReverseSweepToA) ||
          (state_ == EncoderCalibrationState::AutoSeekLimitA) ||
          (state_ == EncoderCalibrationState::AutoBackoffA) ||
          (state_ == EncoderCalibrationState::AutoSeekLimitB)) &&
@@ -177,7 +178,9 @@ EncoderCalibration::Action EncoderCalibration::update(
     }
     if ((state_ == EncoderCalibrationState::MoveToA) ||
         (state_ == EncoderCalibrationState::SettleAtA) ||
-        (state_ == EncoderCalibrationState::SweepToB)) {
+        (state_ == EncoderCalibrationState::SweepToB) ||
+        (state_ == EncoderCalibrationState::SettleAtB) ||
+        (state_ == EncoderCalibrationState::ReverseSweepToA)) {
         const int32_t low = std::min<int32_t>(0, data_.manual_span_ticks) - kHardLimitToleranceTicks;
         const int32_t high = std::max<int32_t>(0, data_.manual_span_ticks) + kHardLimitToleranceTicks;
         if ((position_ticks_ < low) || (position_ticks_ > high)) {
@@ -251,6 +254,7 @@ EncoderCalibration::Action EncoderCalibration::update(
             safe_start_ticks_ = position_ticks_;
             previous_position_ticks_ = position_ticks_;
             tmc_samples_.fill(0);
+            reverse_tmc_samples_.fill(0);
             tmc_samples_[0] = 0;
             next_point_ = 1U;
             action.zero_tmc_position = true;
@@ -269,6 +273,34 @@ EncoderCalibration::Action EncoderCalibration::update(
         if (reached(safe_end_ticks_, previous_position_ticks_, position_ticks_)) {
             action.velocity_steps = 0;
             tmc_samples_[data_.point_count - 1U] = tmc_position_steps;
+            state_started_ms_ = now_ms;
+            state_ = EncoderCalibrationState::SettleAtB;
+        }
+        break;
+    case EncoderCalibrationState::SettleAtB:
+        action.command_velocity = true;
+        if ((now_ms - state_started_ms_) >= kSettleTimeMs) {
+            previous_position_ticks_ = position_ticks_;
+            next_point_ = data_.point_count - 1U;
+            state_started_ms_ = now_ms;
+            state_ = EncoderCalibrationState::ReverseSweepToA;
+        }
+        break;
+    case EncoderCalibrationState::ReverseSweepToA:
+        action.command_velocity = true;
+        action.velocity_steps = velocity_toward(safe_start_ticks_);
+        while ((next_point_ < data_.point_count) &&
+               reached(point_target(next_point_), previous_position_ticks_, position_ticks_)) {
+            reverse_tmc_samples_[next_point_] = tmc_position_steps;
+            if (next_point_ == 0U) {
+                next_point_ = data_.point_count;
+            } else {
+                --next_point_;
+            }
+        }
+        if (reached(safe_start_ticks_, previous_position_ticks_, position_ticks_)) {
+            action.velocity_steps = 0;
+            reverse_tmc_samples_[0] = tmc_position_steps;
             state_ = EncoderCalibrationState::Processing;
         }
         break;
@@ -339,27 +371,62 @@ int32_t EncoderCalibration::point_target(const uint16_t index) const
 bool EncoderCalibration::process_table()
 {
     const uint16_t count = data_.point_count;
-    const int32_t tmc_span = tmc_samples_[count - 1U];
-    const int32_t raw_span = safe_end_ticks_ - safe_start_ticks_;
-    if ((count < 2U) || (tmc_span == 0) || (raw_span == 0)) {
+    if (count < 2U) {
         return false;
     }
-    data_.tmc_span_steps = tmc_span;
+    const int32_t forward_span = tmc_samples_[count - 1U] - tmc_samples_[0];
+    const int32_t reverse_span = reverse_tmc_samples_[count - 1U] - reverse_tmc_samples_[0];
+    const int32_t raw_span = safe_end_ticks_ - safe_start_ticks_;
+    if ((forward_span == 0) || (reverse_span == 0) || (raw_span == 0) ||
+        ((forward_span > 0) != (reverse_span > 0))) {
+        return false;
+    }
+
+    const int64_t span_difference = std::abs(
+        static_cast<int64_t>(forward_span) - static_cast<int64_t>(reverse_span));
+    const int64_t larger_span = std::max(
+        std::abs(static_cast<int64_t>(forward_span)),
+        std::abs(static_cast<int64_t>(reverse_span)));
+    if ((span_difference * 20) > larger_span) {
+        return false;
+    }
+
+    data_.tmc_span_steps = static_cast<int32_t>(
+        (static_cast<int64_t>(forward_span) + static_cast<int64_t>(reverse_span)) / 2);
     std::array<int16_t, ENCODER_CALIBRATION_MAX_POINTS> raw_corrections{};
     for (uint16_t i = 0U; i < count; ++i) {
         const int64_t actual = (static_cast<int64_t>(raw_span) * i) / (count - 1U);
-        const int64_t ideal = (static_cast<int64_t>(tmc_samples_[i]) * raw_span) / tmc_span;
-        const int64_t correction = ideal - actual;
+        const int64_t forward_ideal =
+            (static_cast<int64_t>(tmc_samples_[i] - tmc_samples_[0]) * raw_span) / forward_span;
+        const int64_t reverse_ideal =
+            (static_cast<int64_t>(reverse_tmc_samples_[i] - reverse_tmc_samples_[0]) * raw_span) /
+            reverse_span;
+        const int64_t correction = ((forward_ideal + reverse_ideal) / 2) - actual;
         if ((correction < -kMaximumCorrectionTicks) || (correction > kMaximumCorrectionTicks)) {
             return false;
         }
         raw_corrections[i] = static_cast<int16_t>(correction);
         if ((i > 0U) &&
-            (((tmc_span > 0) && (tmc_samples_[i] <= tmc_samples_[i - 1U])) ||
-             ((tmc_span < 0) && (tmc_samples_[i] >= tmc_samples_[i - 1U])))) {
+            (((forward_span > 0) &&
+              ((tmc_samples_[i] <= tmc_samples_[i - 1U]) ||
+               (reverse_tmc_samples_[i] <= reverse_tmc_samples_[i - 1U]))) ||
+             ((forward_span < 0) &&
+              ((tmc_samples_[i] >= tmc_samples_[i - 1U]) ||
+               (reverse_tmc_samples_[i] >= reverse_tmc_samples_[i - 1U]))))) {
             return false;
         }
     }
+
+    const uint16_t backlash_begin = count / 10U;
+    const uint16_t backlash_end = count - backlash_begin;
+    int64_t backlash_sum = 0;
+    for (uint16_t i = backlash_begin; i < backlash_end; ++i) {
+        backlash_sum += std::abs(
+            static_cast<int64_t>(reverse_tmc_samples_[i]) - static_cast<int64_t>(tmc_samples_[i]));
+    }
+    data_.backlash_steps = static_cast<int32_t>(
+        backlash_sum / static_cast<int64_t>(backlash_end - backlash_begin));
+
     data_.correction_ticks[0] = raw_corrections[0];
     for (uint16_t i = 1U; i + 1U < count; ++i) {
         data_.correction_ticks[i] = static_cast<int16_t>(
@@ -416,7 +483,16 @@ EncoderCalibrationError EncoderCalibration::error() const { return error_; }
 int32_t EncoderCalibration::progress_percent() const
 {
     if (state_ == EncoderCalibrationState::SweepToB) {
-        return static_cast<int32_t>((100U * next_point_) / data_.point_count);
+        return static_cast<int32_t>((50U * next_point_) / data_.point_count);
+    }
+    if (state_ == EncoderCalibrationState::SettleAtB) {
+        return 50;
+    }
+    if (state_ == EncoderCalibrationState::ReverseSweepToA) {
+        const uint32_t completed = (next_point_ < data_.point_count)
+            ? (data_.point_count - 1U - next_point_)
+            : data_.point_count;
+        return 50 + static_cast<int32_t>((50U * completed) / data_.point_count);
     }
     return (state_ == EncoderCalibrationState::Complete) ? 100 : 0;
 }

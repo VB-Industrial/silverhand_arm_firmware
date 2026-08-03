@@ -6,8 +6,9 @@
 #include "at24_eeprom.h"
 
 enum {
-    CALIBRATION_VERSION = 2U,
-    CALIBRATION_LEGACY_VERSION = 1U,
+    CALIBRATION_VERSION = 3U,
+    CALIBRATION_V2_VERSION = 2U,
+    CALIBRATION_V1_VERSION = 1U,
     CALIBRATION_VALID = 0xA5U,
     CALIBRATION_SLOT_SIZE = 768U,
     CALIBRATION_SLOT_A = 0x0000U,
@@ -30,7 +31,7 @@ typedef struct calibration_record {
     uint32_t crc32;
 } calibration_record;
 
-typedef struct legacy_calibration_data {
+typedef struct calibration_v1_data {
     uint32_t sequence;
     uint16_t point_count;
     uint16_t limit_a_raw;
@@ -39,21 +40,47 @@ typedef struct legacy_calibration_data {
     uint16_t safe_margin_ticks;
     int32_t tmc_span_steps;
     int16_t correction_ticks[ENCODER_CALIBRATION_MAX_POINTS];
-} legacy_calibration_data;
+} calibration_v1_data;
 
-typedef struct legacy_calibration_record {
+typedef struct calibration_v1_record {
     uint32_t magic;
     uint16_t version;
     uint16_t size;
     uint8_t joint_id;
     uint8_t valid;
     uint16_t reserved;
-    legacy_calibration_data data;
+    calibration_v1_data data;
     uint32_t crc32;
-} legacy_calibration_record;
+} calibration_v1_record;
 
-_Static_assert(sizeof(calibration_record) == 556U, "unexpected calibration v2 layout");
-_Static_assert(sizeof(legacy_calibration_record) == 552U, "unexpected calibration v1 layout");
+typedef struct calibration_v2_data {
+    uint32_t sequence;
+    uint16_t point_count;
+    uint16_t limit_a_raw;
+    uint16_t limit_b_raw;
+    int32_t manual_span_ticks;
+    uint16_t safe_margin_ticks;
+    int32_t tmc_span_steps;
+    uint16_t zero_raw;
+    uint8_t zero_valid;
+    uint8_t reserved;
+    int16_t correction_ticks[ENCODER_CALIBRATION_MAX_POINTS];
+} calibration_v2_data;
+
+typedef struct calibration_v2_record {
+    uint32_t magic;
+    uint16_t version;
+    uint16_t size;
+    uint8_t joint_id;
+    uint8_t valid;
+    uint16_t reserved;
+    calibration_v2_data data;
+    uint32_t crc32;
+} calibration_v2_record;
+
+_Static_assert(sizeof(calibration_record) == 560U, "unexpected calibration v3 layout");
+_Static_assert(sizeof(calibration_v2_record) == 556U, "unexpected calibration v2 layout");
+_Static_assert(sizeof(calibration_v1_record) == 552U, "unexpected calibration v1 layout");
 _Static_assert(sizeof(calibration_record) <= CALIBRATION_SLOT_SIZE, "calibration record exceeds EEPROM slot");
 
 static uint32_t crc32(const uint8_t* data, size_t size)
@@ -118,21 +145,38 @@ static bool record_valid(const calibration_record* record, uint8_t joint_id)
     return crc32((const uint8_t*)&copy, offsetof(calibration_record, crc32)) == expected;
 }
 
-static bool legacy_record_valid(const legacy_calibration_record* record, const uint8_t joint_id)
+static bool v1_record_valid(const calibration_v1_record* record, const uint8_t joint_id)
 {
     if ((record->magic != CALIBRATION_MAGIC) ||
-        (record->version != CALIBRATION_LEGACY_VERSION) ||
-        (record->size != sizeof(legacy_calibration_record)) ||
+        (record->version != CALIBRATION_V1_VERSION) ||
+        (record->size != sizeof(calibration_v1_record)) ||
         (record->joint_id != joint_id) ||
         (record->valid != CALIBRATION_VALID) ||
         (record->data.point_count < 2U) ||
         (record->data.point_count > ENCODER_CALIBRATION_MAX_POINTS)) {
         return false;
     }
-    legacy_calibration_record copy = *record;
+    calibration_v1_record copy = *record;
     copy.valid = 0U;
     const uint32_t expected = copy.crc32;
-    return crc32((const uint8_t*)&copy, offsetof(legacy_calibration_record, crc32)) == expected;
+    return crc32((const uint8_t*)&copy, offsetof(calibration_v1_record, crc32)) == expected;
+}
+
+static bool v2_record_valid(const calibration_v2_record* record, const uint8_t joint_id)
+{
+    if ((record->magic != CALIBRATION_MAGIC) ||
+        (record->version != CALIBRATION_V2_VERSION) ||
+        (record->size != sizeof(calibration_v2_record)) ||
+        (record->joint_id != joint_id) ||
+        (record->valid != CALIBRATION_VALID) ||
+        (record->data.point_count < 2U) ||
+        (record->data.point_count > ENCODER_CALIBRATION_MAX_POINTS)) {
+        return false;
+    }
+    calibration_v2_record copy = *record;
+    copy.valid = 0U;
+    const uint32_t expected = copy.crc32;
+    return crc32((const uint8_t*)&copy, offsetof(calibration_v2_record, crc32)) == expected;
 }
 
 static bool read_record(const uint16_t address, const uint8_t joint_id, calibration_record* record)
@@ -148,11 +192,11 @@ static bool read_record(const uint16_t address, const uint8_t joint_id, calibrat
     if ((header.version == CALIBRATION_VERSION) && (header.size == sizeof(*record))) {
         return read_bytes(address, (uint8_t*)record, sizeof(*record)) && record_valid(record, joint_id);
     }
-    if ((header.version == CALIBRATION_LEGACY_VERSION) &&
-        (header.size == sizeof(legacy_calibration_record))) {
-        legacy_calibration_record legacy;
-        if (!read_bytes(address, (uint8_t*)&legacy, sizeof(legacy)) ||
-            !legacy_record_valid(&legacy, joint_id)) {
+    if ((header.version == CALIBRATION_V2_VERSION) &&
+        (header.size == sizeof(calibration_v2_record))) {
+        calibration_v2_record v2;
+        if (!read_bytes(address, (uint8_t*)&v2, sizeof(v2)) ||
+            !v2_record_valid(&v2, joint_id)) {
             return false;
         }
         memset(record, 0, sizeof(*record));
@@ -161,14 +205,39 @@ static bool read_record(const uint16_t address, const uint8_t joint_id, calibrat
         record->size = sizeof(*record);
         record->joint_id = joint_id;
         record->valid = CALIBRATION_VALID;
-        record->data.sequence = legacy.data.sequence;
-        record->data.point_count = legacy.data.point_count;
-        record->data.limit_a_raw = legacy.data.limit_a_raw;
-        record->data.limit_b_raw = legacy.data.limit_b_raw;
-        record->data.manual_span_ticks = legacy.data.manual_span_ticks;
-        record->data.safe_margin_ticks = legacy.data.safe_margin_ticks;
-        record->data.tmc_span_steps = legacy.data.tmc_span_steps;
-        memcpy(record->data.correction_ticks, legacy.data.correction_ticks, sizeof(legacy.data.correction_ticks));
+        record->data.sequence = v2.data.sequence;
+        record->data.point_count = v2.data.point_count;
+        record->data.limit_a_raw = v2.data.limit_a_raw;
+        record->data.limit_b_raw = v2.data.limit_b_raw;
+        record->data.manual_span_ticks = v2.data.manual_span_ticks;
+        record->data.safe_margin_ticks = v2.data.safe_margin_ticks;
+        record->data.tmc_span_steps = v2.data.tmc_span_steps;
+        record->data.zero_raw = v2.data.zero_raw;
+        record->data.zero_valid = v2.data.zero_valid;
+        memcpy(record->data.correction_ticks, v2.data.correction_ticks, sizeof(v2.data.correction_ticks));
+        return true;
+    }
+    if ((header.version == CALIBRATION_V1_VERSION) &&
+        (header.size == sizeof(calibration_v1_record))) {
+        calibration_v1_record v1;
+        if (!read_bytes(address, (uint8_t*)&v1, sizeof(v1)) ||
+            !v1_record_valid(&v1, joint_id)) {
+            return false;
+        }
+        memset(record, 0, sizeof(*record));
+        record->magic = CALIBRATION_MAGIC;
+        record->version = CALIBRATION_VERSION;
+        record->size = sizeof(*record);
+        record->joint_id = joint_id;
+        record->valid = CALIBRATION_VALID;
+        record->data.sequence = v1.data.sequence;
+        record->data.point_count = v1.data.point_count;
+        record->data.limit_a_raw = v1.data.limit_a_raw;
+        record->data.limit_b_raw = v1.data.limit_b_raw;
+        record->data.manual_span_ticks = v1.data.manual_span_ticks;
+        record->data.safe_margin_ticks = v1.data.safe_margin_ticks;
+        record->data.tmc_span_steps = v1.data.tmc_span_steps;
+        memcpy(record->data.correction_ticks, v1.data.correction_ticks, sizeof(v1.data.correction_ticks));
         return true;
     }
     return false;

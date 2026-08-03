@@ -18,6 +18,7 @@ typedef struct encoder_calibration_data {
     int32_t manual_span_ticks;
     uint16_t safe_margin_ticks;
     int32_t tmc_span_steps;
+    int32_t backlash_steps;
     uint16_t zero_raw;
     uint8_t zero_valid;
     uint8_t reserved;

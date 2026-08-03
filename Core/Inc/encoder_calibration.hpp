@@ -23,6 +23,8 @@ enum class EncoderCalibrationState : int32_t {
     AutoSeekLimitA = 12,
     AutoBackoffA = 13,
     AutoSeekLimitB = 14,
+    SettleAtB = 15,
+    ReverseSweepToA = 16,
 };
 
 enum class EncoderCalibrationError : int32_t {
@@ -96,5 +98,6 @@ private:
     uint32_t stall_anchor_ms_ = 0U;
     int32_t stall_anchor_ticks_ = 0;
     std::array<int32_t, ENCODER_CALIBRATION_MAX_POINTS> tmc_samples_{};
+    std::array<int32_t, ENCODER_CALIBRATION_MAX_POINTS> reverse_tmc_samples_{};
     encoder_calibration_data data_{};
 };
