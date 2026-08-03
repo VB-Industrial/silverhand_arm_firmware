@@ -278,7 +278,7 @@ Fault mask bits are:
 
 | Bit | Meaning |
 | --- | --- |
-| 0 | Fusion offset exceeded its plausible backlash range |
+| 0 | Motor slip: fusion offset exceeded its plausible backlash range |
 | 1 | TMC5160 communication failure |
 | 2 | TMC5160 enable-pin readback failure |
 | 3 | TMC5160 configuration readback failure |
@@ -345,8 +345,10 @@ During normal control, firmware checks the absolute floating offset against
 `max(5 degrees, 1.5 * measured_backlash + 2 degrees)`. An excess must persist
 for 500 ms before fault bit 0 is session-latched. The response is stop and
 HOLD, without disarming the driver and without writing the event to EEPROM.
-`fail_ack` clears the latch and reanchors the estimator to the current absolute
-encoder position.
+Normal and calibration motion commands are rejected until a controller reset or
+`fail_ack=1`. The acknowledgement is accepted only with a healthy calibrated
+output encoder and TMC5160; it clears the latch and reanchors the motor-relative
+angle to the current absolute encoder through the session-only fusion offset.
 
 The fused velocity is the filtered derivative of this final angle. If the
 output encoder becomes unavailable, relative tracking continues from TMC

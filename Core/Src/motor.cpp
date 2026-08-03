@@ -590,6 +590,9 @@ extern "C" bool motor_fusion_get_diagnostics(motor_fusion_diagnostics* const dia
 extern "C" bool motor_calibration_command(const int32_t command)
 {
     if (command == 1) {
+        if (!g_fault_manager.motion_allowed()) {
+            return false;
+        }
         tmc5160_move(0);
         if (!g_tmc_driver.disable()) {
             g_encoder_calibration.fail(EncoderCalibrationError::Driver);
@@ -615,6 +618,9 @@ extern "C" bool motor_calibration_command(const int32_t command)
 
 extern "C" bool motor_calibration_next(void)
 {
+    if (!g_fault_manager.motion_allowed()) {
+        return false;
+    }
     const bool starts_motion = g_encoder_calibration.state() == EncoderCalibrationState::Ready;
     if (!g_encoder_calibration.advance(HAL_GetTick(), g_output_encoder_available, g_encoder_angle_raw)) {
         return false;
@@ -635,7 +641,9 @@ extern "C" bool motor_calibration_next(void)
 
 extern "C" bool motor_auto_calibration_start(void)
 {
-    if (g_encoder_calibration.blocks_normal_control() || !g_output_encoder_available) {
+    if (!g_fault_manager.motion_allowed() ||
+        g_encoder_calibration.blocks_normal_control() ||
+        !g_output_encoder_available) {
         return false;
     }
     tmc5160_move(0);
@@ -656,7 +664,8 @@ extern "C" bool motor_auto_calibration_start(void)
 
 extern "C" bool motor_backlash_calibration_start(void)
 {
-    if (g_encoder_calibration.blocks_normal_control() ||
+    if (!g_fault_manager.motion_allowed() ||
+        g_encoder_calibration.blocks_normal_control() ||
         !g_output_encoder_available ||
         !g_encoder_calibration.has_stored_data()) {
         return false;
@@ -692,7 +701,8 @@ extern "C" bool motor_backlash_calibration_start(void)
 
 extern "C" bool motor_zero_calibrate(void)
 {
-    if (g_encoder_calibration.blocks_normal_control() ||
+    if (!g_fault_manager.motion_allowed() ||
+        g_encoder_calibration.blocks_normal_control() ||
         !g_output_encoder_available ||
         !g_encoder_calibration.has_stored_data()) {
         return false;
@@ -768,6 +778,15 @@ extern "C" float motor_fused_velocity_manipulator(void)
 
 extern "C" bool motor_ack_fail(void)
 {
+    const bool fusion_offset_fault =
+        (g_fault_manager.latched_faults() & FaultFusionOffsetExceeded) != 0U;
+    if (fusion_offset_fault &&
+        (!g_output_encoder_available ||
+         !g_fusion_uses_calibrated_encoder ||
+         g_encoder_calibration.blocks_normal_control() ||
+         (g_tmc_driver.error() != Tmc5160Error::None))) {
+        return false;
+    }
     const bool sync_offset = g_fault_manager.acknowledge();
     if (sync_offset) {
         sync_tmc_offset_to_encoder();
