@@ -258,7 +258,8 @@ The node exposes the following read-only Cyphal registers:
   signed_manual_span, safe_margin, point_count, tmc_span_steps,
   zero_valid, zero_raw, backlash_steps, manual_total_travel]`. The reported
   TMC span is the signed average of the forward and reverse measurement spans;
-  backlash is a positive mean motor-step difference between both directions.
+  backlash is the positive median effective lost motion from six midpoint
+  reversals, expressed in TMC microsteps.
 - `enc_status`: `[last_read_ok, HAL_status, transfer_count, error_count,
   raw_16bit_frame, has_valid_angle]`. The working single-frame AS50xx exchange
   is intentionally unchanged; a failed transfer preserves the last valid angle.
@@ -301,11 +302,17 @@ builds and stores a correction table but does not yet apply it to joint state.
    constant-speed measurement passes from A to B and back to A.
 5. A table of up to 256 uniformly spaced `int16` correction points is checked
    for monotonicity. The mean of the normalized forward/reverse tables captures
-   encoder nonlinearity, while their mean TMC step difference over the central
-   80 percent of travel estimates backlash. Both are saved to redundant EEPROM
-   slots A/B with version, sequence, CRC, valid marker, and readback
-   verification. Completion and any abort leave the driver disarmed; reboot
-   before normal operation.
+   encoder nonlinearity.
+6. Firmware moves to the middle of the range and performs four low-current
+   rocking cycles between `middle - 15 degrees` and `middle + 15 degrees`.
+   For a narrow joint, each side is limited to one quarter of the calibrated
+   span. Each half-cycle subtracts the encoder-implied TMC travel from actual
+   TMC travel; the first cycle is discarded and the median of the remaining
+   six reversals is stored as effective backlash.
+7. The joint returns to the middle, then the table and backlash are saved to
+   redundant EEPROM slots A/B with version, sequence, CRC, valid marker, and
+   readback verification. Completion and any abort leave the driver disarmed;
+   reboot before normal operation.
 
 The automatic path stays inside the manually captured physical limits. Its
 margin is 2 percent of the observed span, clamped to 16...200 encoder ticks.
@@ -328,7 +335,9 @@ ready, `4` move to A, `5` settle, `6` sweep to B, `7` processing, `8` saving,
 `9` complete, `10` failed, and `11` aborted.
 Automatic discovery additionally uses `12` seek limit A, `13` back off A, and
 `14` seek limit B. Bidirectional measurement uses `15` settle at B and `16`
-sweep back to A.
+sweep back to A. Midpoint backlash measurement uses `17` move to rocking
+start, `18` settle, `19` sweep between rocking endpoints, `20` return to the
+middle, and `21` settle in the middle.
 
 After calibrating the limits/table, place the joint at its geometric zero and
 invoke the trigger without a value:

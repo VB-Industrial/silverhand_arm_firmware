@@ -25,6 +25,11 @@ enum class EncoderCalibrationState : int32_t {
     AutoSeekLimitB = 14,
     SettleAtB = 15,
     ReverseSweepToA = 16,
+    MoveToRockStart = 17,
+    RockSettle = 18,
+    RockSweep = 19,
+    MoveToMiddle = 20,
+    SettleAtMiddle = 21,
 };
 
 enum class EncoderCalibrationError : int32_t {
@@ -71,7 +76,11 @@ private:
     int32_t velocity_toward(int32_t target) const;
     bool reached(int32_t target, int32_t previous, int32_t current) const;
     int32_t point_target(uint16_t index) const;
+    int32_t corrected_position_ticks(int32_t position_ticks) const;
     bool process_table();
+    bool prepare_backlash_rock();
+    bool record_backlash_sample(int32_t position_ticks, int32_t tmc_position_steps);
+    bool finalize_backlash();
     bool auto_stall_detected(uint32_t now_ms);
     bool prepare_automatic_span(uint16_t raw);
 
@@ -81,6 +90,12 @@ private:
     static constexpr uint32_t kAutoStallTimeMs = 300U;
     static constexpr uint32_t kAutoStartupGraceMs = 500U;
     static constexpr int32_t kAutoStallMotionTicks = 6;
+    static constexpr uint8_t kBacklashRockCycles = 4U;
+    static constexpr uint8_t kBacklashDiscardedSamples = 2U;
+    static constexpr uint8_t kBacklashSampleCount = 2U * kBacklashRockCycles;
+    static constexpr int32_t kMinimumBacklashRockHalfRangeTicks = 8;
+    // One twenty-fourth of an encoder revolution is 15 degrees.
+    static constexpr int32_t kBacklashRockHalfRangeTicks = 16384 / 24;
 
     EncoderCalibrationState state_ = EncoderCalibrationState::Idle;
     EncoderCalibrationError error_ = EncoderCalibrationError::None;
@@ -97,7 +112,16 @@ private:
     uint16_t next_point_ = 0U;
     uint32_t stall_anchor_ms_ = 0U;
     int32_t stall_anchor_ticks_ = 0;
+    int32_t rock_middle_ticks_ = 0;
+    int32_t rock_low_ticks_ = 0;
+    int32_t rock_high_ticks_ = 0;
+    int32_t rock_target_ticks_ = 0;
+    int32_t rock_start_position_ticks_ = 0;
+    int32_t rock_start_tmc_steps_ = 0;
+    uint8_t backlash_sample_count_ = 0U;
+    bool rock_at_high_ = false;
     std::array<int32_t, ENCODER_CALIBRATION_MAX_POINTS> tmc_samples_{};
     std::array<int32_t, ENCODER_CALIBRATION_MAX_POINTS> reverse_tmc_samples_{};
+    std::array<int32_t, kBacklashSampleCount> backlash_samples_{};
     encoder_calibration_data data_{};
 };

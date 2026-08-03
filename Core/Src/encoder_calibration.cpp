@@ -167,6 +167,9 @@ EncoderCalibration::Action EncoderCalibration::update(
     if (((state_ == EncoderCalibrationState::MoveToA) ||
          (state_ == EncoderCalibrationState::SweepToB) ||
          (state_ == EncoderCalibrationState::ReverseSweepToA) ||
+         (state_ == EncoderCalibrationState::MoveToRockStart) ||
+         (state_ == EncoderCalibrationState::RockSweep) ||
+         (state_ == EncoderCalibrationState::MoveToMiddle) ||
          (state_ == EncoderCalibrationState::AutoSeekLimitA) ||
          (state_ == EncoderCalibrationState::AutoBackoffA) ||
          (state_ == EncoderCalibrationState::AutoSeekLimitB)) &&
@@ -180,7 +183,12 @@ EncoderCalibration::Action EncoderCalibration::update(
         (state_ == EncoderCalibrationState::SettleAtA) ||
         (state_ == EncoderCalibrationState::SweepToB) ||
         (state_ == EncoderCalibrationState::SettleAtB) ||
-        (state_ == EncoderCalibrationState::ReverseSweepToA)) {
+        (state_ == EncoderCalibrationState::ReverseSweepToA) ||
+        (state_ == EncoderCalibrationState::MoveToRockStart) ||
+        (state_ == EncoderCalibrationState::RockSettle) ||
+        (state_ == EncoderCalibrationState::RockSweep) ||
+        (state_ == EncoderCalibrationState::MoveToMiddle) ||
+        (state_ == EncoderCalibrationState::SettleAtMiddle)) {
         const int32_t low = std::min<int32_t>(0, data_.manual_span_ticks) - kHardLimitToleranceTicks;
         const int32_t high = std::max<int32_t>(0, data_.manual_span_ticks) + kHardLimitToleranceTicks;
         if ((position_ticks_ < low) || (position_ticks_ > high)) {
@@ -306,10 +314,71 @@ EncoderCalibration::Action EncoderCalibration::update(
         break;
     case EncoderCalibrationState::Processing:
         action.command_velocity = true;
-        if (!process_table()) {
+        if (!process_table() || !prepare_backlash_rock()) {
             fail(EncoderCalibrationError::InvalidTable);
             action.disable_driver = true;
         } else {
+            state_started_ms_ = now_ms;
+            state_ = EncoderCalibrationState::MoveToRockStart;
+        }
+        break;
+    case EncoderCalibrationState::MoveToRockStart:
+        action.command_velocity = true;
+        action.velocity_steps = velocity_toward(rock_high_ticks_);
+        if (reached(rock_high_ticks_, previous_position_ticks_, position_ticks_)) {
+            action.velocity_steps = 0;
+            rock_at_high_ = true;
+            state_started_ms_ = now_ms;
+            state_ = EncoderCalibrationState::RockSettle;
+        }
+        break;
+    case EncoderCalibrationState::RockSettle:
+        action.command_velocity = true;
+        if ((now_ms - state_started_ms_) >= kSettleTimeMs) {
+            if (backlash_sample_count_ >= kBacklashSampleCount) {
+                if (!finalize_backlash()) {
+                    fail(EncoderCalibrationError::InvalidTable);
+                    action.disable_driver = true;
+                } else {
+                    state_started_ms_ = now_ms;
+                    state_ = EncoderCalibrationState::MoveToMiddle;
+                }
+            } else {
+                rock_start_position_ticks_ = position_ticks_;
+                rock_start_tmc_steps_ = tmc_position_steps;
+                rock_target_ticks_ = rock_at_high_ ? rock_low_ticks_ : rock_high_ticks_;
+                state_started_ms_ = now_ms;
+                state_ = EncoderCalibrationState::RockSweep;
+            }
+        }
+        break;
+    case EncoderCalibrationState::RockSweep:
+        action.command_velocity = true;
+        action.velocity_steps = velocity_toward(rock_target_ticks_);
+        if (reached(rock_target_ticks_, previous_position_ticks_, position_ticks_)) {
+            action.velocity_steps = 0;
+            if (!record_backlash_sample(position_ticks_, tmc_position_steps)) {
+                fail(EncoderCalibrationError::InvalidTable);
+                action.disable_driver = true;
+            } else {
+                rock_at_high_ = !rock_at_high_;
+                state_started_ms_ = now_ms;
+                state_ = EncoderCalibrationState::RockSettle;
+            }
+        }
+        break;
+    case EncoderCalibrationState::MoveToMiddle:
+        action.command_velocity = true;
+        action.velocity_steps = velocity_toward(rock_middle_ticks_);
+        if (reached(rock_middle_ticks_, previous_position_ticks_, position_ticks_)) {
+            action.velocity_steps = 0;
+            state_started_ms_ = now_ms;
+            state_ = EncoderCalibrationState::SettleAtMiddle;
+        }
+        break;
+    case EncoderCalibrationState::SettleAtMiddle:
+        action.command_velocity = true;
+        if ((now_ms - state_started_ms_) >= kSettleTimeMs) {
             state_ = EncoderCalibrationState::Saving;
         }
         break;
@@ -417,16 +486,6 @@ bool EncoderCalibration::process_table()
         }
     }
 
-    const uint16_t backlash_begin = count / 10U;
-    const uint16_t backlash_end = count - backlash_begin;
-    int64_t backlash_sum = 0;
-    for (uint16_t i = backlash_begin; i < backlash_end; ++i) {
-        backlash_sum += std::abs(
-            static_cast<int64_t>(reverse_tmc_samples_[i]) - static_cast<int64_t>(tmc_samples_[i]));
-    }
-    data_.backlash_steps = static_cast<int32_t>(
-        backlash_sum / static_cast<int64_t>(backlash_end - backlash_begin));
-
     data_.correction_ticks[0] = raw_corrections[0];
     for (uint16_t i = 1U; i + 1U < count; ++i) {
         data_.correction_ticks[i] = static_cast<int16_t>(
@@ -444,6 +503,91 @@ bool EncoderCalibration::process_table()
             return false;
         }
     }
+    return true;
+}
+
+int32_t EncoderCalibration::corrected_position_ticks(const int32_t position_ticks) const
+{
+    const int64_t span = std::abs(static_cast<int64_t>(safe_end_ticks_) - safe_start_ticks_);
+    const int64_t distance = std::abs(static_cast<int64_t>(position_ticks) - safe_start_ticks_);
+    const int64_t scaled = distance * (data_.point_count - 1U);
+    const uint16_t index = static_cast<uint16_t>(std::min<int64_t>(scaled / span, data_.point_count - 1U));
+    int32_t correction = data_.correction_ticks[index];
+    if (index + 1U < data_.point_count) {
+        const int64_t remainder = scaled % span;
+        const int32_t difference =
+            static_cast<int32_t>(data_.correction_ticks[index + 1U]) - data_.correction_ticks[index];
+        correction += static_cast<int32_t>((static_cast<int64_t>(difference) * remainder) / span);
+    }
+    return position_ticks + correction;
+}
+
+bool EncoderCalibration::prepare_backlash_rock()
+{
+    const int32_t span = safe_end_ticks_ - safe_start_ticks_;
+    const int32_t span_abs = std::abs(span);
+    const int32_t half_range = std::min(kBacklashRockHalfRangeTicks, span_abs / 4);
+    if ((span_abs == 0) ||
+        (half_range < kMinimumBacklashRockHalfRangeTicks) ||
+        (data_.tmc_span_steps == 0)) {
+        return false;
+    }
+
+    rock_middle_ticks_ = safe_start_ticks_ + (span / 2);
+    rock_low_ticks_ = rock_middle_ticks_ - half_range;
+    rock_high_ticks_ = rock_middle_ticks_ + half_range;
+    rock_target_ticks_ = rock_high_ticks_;
+    backlash_sample_count_ = 0U;
+    backlash_samples_.fill(0);
+    data_.backlash_steps = 0;
+    return true;
+}
+
+bool EncoderCalibration::record_backlash_sample(
+    const int32_t position_ticks,
+    const int32_t tmc_position_steps)
+{
+    if (backlash_sample_count_ >= kBacklashSampleCount) {
+        return false;
+    }
+    const int64_t encoder_delta = std::abs(
+        static_cast<int64_t>(corrected_position_ticks(position_ticks)) -
+        corrected_position_ticks(rock_start_position_ticks_));
+    const int64_t tmc_delta = std::abs(
+        static_cast<int64_t>(tmc_position_steps) - rock_start_tmc_steps_);
+    const int64_t raw_span = std::abs(static_cast<int64_t>(safe_end_ticks_) - safe_start_ticks_);
+    const int64_t tmc_span = std::abs(static_cast<int64_t>(data_.tmc_span_steps));
+    if ((encoder_delta == 0) || (raw_span == 0)) {
+        return false;
+    }
+    const int64_t expected_tmc_delta = ((encoder_delta * tmc_span) + (raw_span / 2)) / raw_span;
+    const int64_t backlash = std::max<int64_t>(0, tmc_delta - expected_tmc_delta);
+    if (backlash > std::numeric_limits<int32_t>::max()) {
+        return false;
+    }
+    backlash_samples_[backlash_sample_count_] = static_cast<int32_t>(backlash);
+    ++backlash_sample_count_;
+    return true;
+}
+
+bool EncoderCalibration::finalize_backlash()
+{
+    if (backlash_sample_count_ != kBacklashSampleCount) {
+        return false;
+    }
+    std::array<int32_t, kBacklashSampleCount - kBacklashDiscardedSamples> retained{};
+    std::copy(
+        backlash_samples_.begin() + kBacklashDiscardedSamples,
+        backlash_samples_.end(),
+        retained.begin());
+    std::sort(retained.begin(), retained.end());
+    const size_t middle = retained.size() / 2U;
+    const int64_t median =
+        (static_cast<int64_t>(retained[middle - 1U]) + retained[middle]) / 2;
+    if (median <= 0) {
+        return false;
+    }
+    data_.backlash_steps = static_cast<int32_t>(median);
     return true;
 }
 
@@ -483,16 +627,29 @@ EncoderCalibrationError EncoderCalibration::error() const { return error_; }
 int32_t EncoderCalibration::progress_percent() const
 {
     if (state_ == EncoderCalibrationState::SweepToB) {
-        return static_cast<int32_t>((50U * next_point_) / data_.point_count);
+        return static_cast<int32_t>((35U * next_point_) / data_.point_count);
     }
     if (state_ == EncoderCalibrationState::SettleAtB) {
-        return 50;
+        return 35;
     }
     if (state_ == EncoderCalibrationState::ReverseSweepToA) {
         const uint32_t completed = (next_point_ < data_.point_count)
             ? (data_.point_count - 1U - next_point_)
             : data_.point_count;
-        return 50 + static_cast<int32_t>((50U * completed) / data_.point_count);
+        return 35 + static_cast<int32_t>((35U * completed) / data_.point_count);
+    }
+    if ((state_ == EncoderCalibrationState::Processing) ||
+        (state_ == EncoderCalibrationState::MoveToRockStart)) {
+        return 70;
+    }
+    if ((state_ == EncoderCalibrationState::RockSettle) ||
+        (state_ == EncoderCalibrationState::RockSweep)) {
+        return 70 + static_cast<int32_t>((25U * backlash_sample_count_) / kBacklashSampleCount);
+    }
+    if ((state_ == EncoderCalibrationState::MoveToMiddle) ||
+        (state_ == EncoderCalibrationState::SettleAtMiddle) ||
+        (state_ == EncoderCalibrationState::Saving)) {
+        return 95;
     }
     return (state_ == EncoderCalibrationState::Complete) ? 100 : 0;
 }

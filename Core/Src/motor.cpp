@@ -241,6 +241,11 @@ void update_calibration(const uint32_t now_ms)
         (calibration_state == EncoderCalibrationState::SweepToB) ||
         (calibration_state == EncoderCalibrationState::SettleAtB) ||
         (calibration_state == EncoderCalibrationState::ReverseSweepToA) ||
+        (calibration_state == EncoderCalibrationState::MoveToRockStart) ||
+        (calibration_state == EncoderCalibrationState::RockSettle) ||
+        (calibration_state == EncoderCalibrationState::RockSweep) ||
+        (calibration_state == EncoderCalibrationState::MoveToMiddle) ||
+        (calibration_state == EncoderCalibrationState::SettleAtMiddle) ||
         (calibration_state == EncoderCalibrationState::Processing) ||
         (calibration_state == EncoderCalibrationState::Saving) ||
         (calibration_state == EncoderCalibrationState::AutoSeekLimitA) ||
