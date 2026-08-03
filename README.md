@@ -247,6 +247,10 @@ The node exposes the following read-only Cyphal registers:
 - `auto_cal`: reading this trigger register starts a fully automatic low-current
   limit search and calibration; use `cal_state` for status instead of reading
   `auto_cal` again.
+- `luft_cal`: reading this trigger register starts only the low-current
+  backlash-rocking stage around the current position. It preserves the stored
+  limits, correction table, TMC span, and geometric zero; use `cal_state` for
+  status instead of reading `luft_cal` again.
 - `zero_cal`: reading this trigger register at the known geometric-zero pose
   stops the motor, stores the current output-encoder raw value, and sets the
   TMC5160 position to zero. Use `cal_result` for status; every read triggers a
@@ -338,6 +342,22 @@ Automatic discovery additionally uses `12` seek limit A, `13` back off A, and
 sweep back to A. Midpoint backlash measurement uses `17` move to rocking
 start, `18` settle, `19` sweep between rocking endpoints, `20` return to the
 middle, and `21` settle in the middle.
+
+To refresh only the backlash estimate after mechanical wear, place the joint
+at any suitable position inside its stored safe range and invoke:
+
+```bash
+y r 26 luft_cal
+```
+
+The current position becomes the rocking center. Firmware stops any previous
+motion, enables the driver if necessary, applies the same limited calibration
+current, and performs four cycles with up to `+/-15 degrees` of output motion.
+The amplitude is reduced symmetrically near a stored safe limit; the trigger is
+rejected if fewer than eight encoder ticks are available on either side. The
+first cycle is discarded and the median of the remaining six reversals replaces
+only `backlash_steps`. The joint returns to the starting position, saves the
+updated EEPROM record, and disarms. Reboot before normal operation.
 
 After calibrating the limits/table, place the joint at its geometric zero and
 invoke the trigger without a value:

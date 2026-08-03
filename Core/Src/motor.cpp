@@ -25,7 +25,7 @@ constexpr float kLargePositionErrorThresholdRad = 5.0F * static_cast<float>(M_PI
 constexpr int32_t kDefaultPositionVelocitySteps = 10000;
 constexpr int32_t kFastPositionVelocitySteps = 30000;
 constexpr int32_t kFullThrottlePositionVelocitySteps = 30000;
-constexpr uint32_t kZeroCalibrationStopTimeoutMs = 250U;
+constexpr uint32_t kServiceStopTimeoutMs = 250U;
 
 uint16_t g_encoder_angle_raw = 0U;
 uint32_t g_zero_enc_runtime = 0U;
@@ -584,6 +584,42 @@ extern "C" bool motor_auto_calibration_start(void)
     return true;
 }
 
+extern "C" bool motor_backlash_calibration_start(void)
+{
+    if (g_encoder_calibration.blocks_normal_control() ||
+        !g_output_encoder_available ||
+        !g_encoder_calibration.has_stored_data()) {
+        return false;
+    }
+
+    tmc5160_move(0);
+    const uint32_t stop_started_ms = HAL_GetTick();
+    while ((tmc5160_velocity_read() != 0) &&
+           ((HAL_GetTick() - stop_started_ms) < kServiceStopTimeoutMs)) {
+        HAL_Delay(1U);
+    }
+    if (tmc5160_velocity_read() != 0) {
+        return false;
+    }
+    if (!g_tmc_driver.is_enabled() && !g_tmc_driver.enable()) {
+        return false;
+    }
+    if (!g_encoder_calibration.begin_backlash(
+            HAL_GetTick(),
+            true,
+            g_encoder_angle_raw)) {
+        return false;
+    }
+
+    constexpr uint8_t kMaximumBacklashCalibrationCurrent = 3U;
+    const uint8_t calibration_current = std::min<uint8_t>(
+        static_cast<uint8_t>(kRobotJointProfile->init_irun),
+        kMaximumBacklashCalibrationCurrent);
+    tmc5160_set_run_current(calibration_current);
+    g_control_mode = MOTOR_CONTROL_MODE_CALIBRATION;
+    return true;
+}
+
 extern "C" bool motor_zero_calibrate(void)
 {
     if (g_encoder_calibration.blocks_normal_control() ||
@@ -595,7 +631,7 @@ extern "C" bool motor_zero_calibrate(void)
     tmc5160_move(0);
     const uint32_t stop_started_ms = HAL_GetTick();
     while ((tmc5160_velocity_read() != 0) &&
-           ((HAL_GetTick() - stop_started_ms) < kZeroCalibrationStopTimeoutMs)) {
+           ((HAL_GetTick() - stop_started_ms) < kServiceStopTimeoutMs)) {
         HAL_Delay(1U);
     }
     if (tmc5160_velocity_read() != 0) {

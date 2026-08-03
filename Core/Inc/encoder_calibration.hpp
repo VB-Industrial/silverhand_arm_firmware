@@ -55,6 +55,7 @@ public:
     void initialize(uint8_t joint_id, bool encoder_inverted, uint16_t raw);
     bool begin(bool encoder_available, uint16_t raw);
     bool begin_auto(uint32_t now_ms, bool encoder_available, uint16_t raw);
+    bool begin_backlash(uint32_t now_ms, bool encoder_available, uint16_t raw);
     bool calibrate_zero(uint16_t raw);
     bool advance(uint32_t now_ms, bool encoder_available, uint16_t raw);
     void abort();
@@ -78,7 +79,8 @@ private:
     int32_t point_target(uint16_t index) const;
     int32_t corrected_position_ticks(int32_t position_ticks) const;
     bool process_table();
-    bool prepare_backlash_rock();
+    bool prepare_backlash_rock(int32_t center_ticks);
+    bool locate_stored_position(uint16_t raw, int32_t& position_ticks);
     bool record_backlash_sample(int32_t position_ticks, int32_t tmc_position_steps);
     bool finalize_backlash();
     bool auto_stall_detected(uint32_t now_ms);
