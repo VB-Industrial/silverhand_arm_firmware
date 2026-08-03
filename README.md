@@ -244,6 +244,9 @@ The node exposes the following read-only Cyphal registers:
 - `control_mode`: `0` hold, `1` servo, `2` direct, `3` calibration.
 - `cal_cmd`: write `1` to enter calibration (stop and disarm), or `2` to
   abort (stop and disarm).
+- `auto_cal`: reading this trigger register starts a fully automatic low-current
+  limit search and calibration; use `cal_state` for status instead of reading
+  `auto_cal` again.
 - `cal_next`: write `1` to capture limit A, capture limit B, and finally start
   the automatic pass, according to the current calibration state.
 - `cal_state`: `[state, error, progress_percent]`.
@@ -299,9 +302,23 @@ The automatic path stays inside the manually captured physical limits. Its
 margin is 2 percent of the observed span, clamped to 16...200 encoder ticks.
 Writing `cal_cmd=2` aborts from any state.
 
+For a fully automatic calibration, invoke the trigger register without a
+value:
+
+```bash
+y r 26 auto_cal
+```
+
+Firmware seeks the first mechanical stop at limited current, detects it from
+the absence of output-encoder motion, backs off, seeks the opposite stop, and
+then runs the same measurement and EEPROM-save stages. Manual calibration
+remains available as a fallback.
+
 Calibration states are `0` idle, `1` wait limit A, `2` wait limit B, `3`
 ready, `4` move to A, `5` settle, `6` sweep to B, `7` processing, `8` saving,
 `9` complete, `10` failed, and `11` aborted.
+Automatic discovery additionally uses `12` seek limit A, `13` back off A, and
+`14` seek limit B.
 
 Only overtemperature shutdowns and short circuits are written to EEPROM.
 Network, communication and position-mismatch events remain session-local. The

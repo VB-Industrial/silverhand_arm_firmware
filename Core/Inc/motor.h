@@ -46,6 +46,7 @@ uint16_t motor_encoder_raw(void);
 bool motor_encoder_get_diagnostics(motor_encoder_diagnostics* diagnostics);
 
 bool motor_calibration_command(int32_t command);
+bool motor_auto_calibration_start(void);
 bool motor_calibration_next(void);
 int32_t motor_calibration_state(void);
 int32_t motor_calibration_error(void);

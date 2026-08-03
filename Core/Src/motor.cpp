@@ -239,7 +239,10 @@ void update_calibration(const uint32_t now_ms)
         (calibration_state == EncoderCalibrationState::SettleAtA) ||
         (calibration_state == EncoderCalibrationState::SweepToB) ||
         (calibration_state == EncoderCalibrationState::Processing) ||
-        (calibration_state == EncoderCalibrationState::Saving);
+        (calibration_state == EncoderCalibrationState::Saving) ||
+        (calibration_state == EncoderCalibrationState::AutoSeekLimitA) ||
+        (calibration_state == EncoderCalibrationState::AutoBackoffA) ||
+        (calibration_state == EncoderCalibrationState::AutoSeekLimitB);
     if (automatic_motion && !g_tmc_driver.is_enabled()) {
         g_encoder_calibration.fail(EncoderCalibrationError::Driver);
     }
@@ -546,6 +549,27 @@ extern "C" bool motor_calibration_next(void)
             kMaximumCalibrationCurrent);
         tmc5160_set_run_current(calibration_current);
     }
+    return true;
+}
+
+extern "C" bool motor_auto_calibration_start(void)
+{
+    if (g_encoder_calibration.blocks_normal_control() || !g_output_encoder_available) {
+        return false;
+    }
+    tmc5160_move(0);
+    if (!g_tmc_driver.is_enabled() && !g_tmc_driver.enable()) {
+        return false;
+    }
+    constexpr uint8_t kMaximumAutoCalibrationCurrent = 3U;
+    const uint8_t calibration_current = std::min<uint8_t>(
+        static_cast<uint8_t>(kRobotJointProfile->init_irun),
+        kMaximumAutoCalibrationCurrent);
+    tmc5160_set_run_current(calibration_current);
+    if (!g_encoder_calibration.begin_auto(HAL_GetTick(), true, g_encoder_angle_raw)) {
+        return false;
+    }
+    g_control_mode = MOTOR_CONTROL_MODE_CALIBRATION;
     return true;
 }
 

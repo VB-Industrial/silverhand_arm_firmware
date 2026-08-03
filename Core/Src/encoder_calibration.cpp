@@ -36,6 +36,24 @@ bool EncoderCalibration::begin(const bool encoder_available, const uint16_t raw)
     return true;
 }
 
+bool EncoderCalibration::begin_auto(const uint32_t now_ms, const bool encoder_available, const uint16_t raw)
+{
+    if (!encoder_available || blocks_normal_control()) {
+        return false;
+    }
+    data_ = {};
+    previous_raw_ = raw;
+    position_ticks_ = 0;
+    previous_position_ticks_ = 0;
+    manual_total_travel_ = 0;
+    error_ = EncoderCalibrationError::None;
+    state_started_ms_ = now_ms;
+    stall_anchor_ms_ = now_ms;
+    stall_anchor_ticks_ = 0;
+    state_ = EncoderCalibrationState::AutoSeekLimitA;
+    return true;
+}
+
 bool EncoderCalibration::advance(const uint32_t now_ms, const bool encoder_available, const uint16_t raw)
 {
     if (!encoder_available) {
@@ -122,7 +140,10 @@ EncoderCalibration::Action EncoderCalibration::update(
         return action;
     }
     if (((state_ == EncoderCalibrationState::MoveToA) ||
-         (state_ == EncoderCalibrationState::SweepToB)) &&
+         (state_ == EncoderCalibrationState::SweepToB) ||
+         (state_ == EncoderCalibrationState::AutoSeekLimitA) ||
+         (state_ == EncoderCalibrationState::AutoBackoffA) ||
+         (state_ == EncoderCalibrationState::AutoSeekLimitB)) &&
         ((now_ms - state_started_ms_) > kMotionTimeoutMs)) {
         fail(EncoderCalibrationError::MotionTimeout);
         action.command_velocity = true;
@@ -143,6 +164,52 @@ EncoderCalibration::Action EncoderCalibration::update(
     }
 
     switch (state_) {
+    case EncoderCalibrationState::AutoSeekLimitA:
+        action.command_velocity = true;
+        action.velocity_steps = kCalibrationVelocitySteps;
+        if (auto_stall_detected(now_ms)) {
+            action.velocity_steps = 0;
+            data_.limit_a_raw = raw;
+            position_ticks_ = 0;
+            previous_position_ticks_ = 0;
+            previous_raw_ = raw;
+            stall_anchor_ticks_ = 0;
+            stall_anchor_ms_ = now_ms;
+            state_started_ms_ = now_ms;
+            state_ = EncoderCalibrationState::AutoBackoffA;
+        }
+        break;
+    case EncoderCalibrationState::AutoBackoffA: {
+        action.command_velocity = true;
+        const int32_t raw_sign_for_positive_tmc = encoder_inverted_ ? -1 : 1;
+        const int32_t target = -raw_sign_for_positive_tmc * 200;
+        action.velocity_steps = -kCalibrationVelocitySteps;
+        if (reached(target, previous_position_ticks_, position_ticks_)) {
+            stall_anchor_ticks_ = position_ticks_;
+            stall_anchor_ms_ = now_ms;
+            state_started_ms_ = now_ms;
+            state_ = EncoderCalibrationState::AutoSeekLimitB;
+        }
+        break;
+    }
+    case EncoderCalibrationState::AutoSeekLimitB:
+        action.command_velocity = true;
+        action.velocity_steps = -kCalibrationVelocitySteps;
+        if (std::abs(position_ticks_) >= kMaximumSpanTicks) {
+            fail(EncoderCalibrationError::InvalidManualSpan);
+            action.velocity_steps = 0;
+            action.disable_driver = true;
+        } else if (auto_stall_detected(now_ms)) {
+            action.velocity_steps = 0;
+            if (!prepare_automatic_span(raw)) {
+                fail(EncoderCalibrationError::InvalidManualSpan);
+                action.disable_driver = true;
+            } else {
+                state_started_ms_ = now_ms;
+                state_ = EncoderCalibrationState::MoveToA;
+            }
+        }
+        break;
     case EncoderCalibrationState::MoveToA:
         if (reached(safe_start_ticks_, previous_position_ticks_, position_ticks_)) {
             state_ = EncoderCalibrationState::SettleAtA;
@@ -285,6 +352,36 @@ bool EncoderCalibration::process_table()
             return false;
         }
     }
+    return true;
+}
+
+bool EncoderCalibration::auto_stall_detected(const uint32_t now_ms)
+{
+    if (std::abs(position_ticks_ - stall_anchor_ticks_) > kAutoStallMotionTicks) {
+        stall_anchor_ticks_ = position_ticks_;
+        stall_anchor_ms_ = now_ms;
+    }
+    return ((now_ms - state_started_ms_) >= kAutoStartupGraceMs) &&
+           ((now_ms - stall_anchor_ms_) >= kAutoStallTimeMs);
+}
+
+bool EncoderCalibration::prepare_automatic_span(const uint16_t raw)
+{
+    const int32_t span = position_ticks_;
+    const int32_t span_abs = (span < 0) ? -span : span;
+    data_.limit_b_raw = raw;
+    data_.manual_span_ticks = span;
+    manual_total_travel_ = span_abs;
+    if ((span_abs < kMinimumSpanTicks) || (span_abs >= kMaximumSpanTicks)) {
+        return false;
+    }
+    const int32_t margin = std::clamp<int32_t>(span_abs / 50, 16, 200);
+    data_.safe_margin_ticks = static_cast<uint16_t>(margin);
+    const int32_t direction = (span > 0) ? 1 : -1;
+    safe_start_ticks_ = direction * margin;
+    safe_end_ticks_ = span - (direction * margin);
+    const int32_t safe_span = std::abs(safe_end_ticks_ - safe_start_ticks_);
+    data_.point_count = static_cast<uint16_t>(std::min<int32_t>(ENCODER_CALIBRATION_MAX_POINTS, safe_span + 1));
     return true;
 }
 
