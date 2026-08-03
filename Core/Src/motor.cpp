@@ -5,6 +5,7 @@
 
 #include <cmath>
 
+#include "encoder_calibration.hpp"
 #include "fault_manager.hpp"
 #include "tmc5160_state.hpp"
 
@@ -43,6 +44,7 @@ motor_control_mode g_control_mode = MOTOR_CONTROL_MODE_HOLD;
 
 FaultManager g_fault_manager;
 Tmc5160StateMachine g_tmc_driver;
+EncoderCalibration g_encoder_calibration;
 
 float manipulator_to_native_radians(const float manipulator_angle_rad)
 {
@@ -52,6 +54,11 @@ float manipulator_to_native_radians(const float manipulator_angle_rad)
 float native_to_manipulator_radians(const float native_angle_rad)
 {
     return static_cast<float>(kRobotJointProfile->direction) * native_angle_rad;
+}
+
+int32_t apply_output_encoder_direction(const int32_t ticks)
+{
+    return (kRobotJointProfile->output_encoder_inverted != 0) ? -ticks : ticks;
 }
 
 float encoder_fused_angle_radians(void)
@@ -65,6 +72,7 @@ float encoder_fused_angle_radians(void)
     } else if (delta_ticks < -kHalfTurnTicks) {
         delta_ticks += kEncoderTicksPerTurn;
     }
+    delta_ticks = apply_output_encoder_direction(delta_ticks);
 
     const float radians_per_tick = (2.0F * static_cast<float>(M_PI)) / static_cast<float>(kEncoderTicksPerTurn);
     return static_cast<float>(delta_ticks) * radians_per_tick;
@@ -153,6 +161,7 @@ void update_fusion_state(const uint32_t now_ms)
     } else if (delta_ticks < -kHalfTurnTicks) {
         delta_ticks += kEncoderTicksPerTurn;
     }
+    delta_ticks = apply_output_encoder_direction(delta_ticks);
 
     const float dt_s = static_cast<float>(dt_ms) / 1000.0F;
     const float radians_per_tick = (2.0F * static_cast<float>(M_PI)) / static_cast<float>(kEncoderTicksPerTurn);
@@ -222,6 +231,37 @@ void update_faults(const uint32_t now_ms)
     }
 }
 
+void update_calibration(const uint32_t now_ms)
+{
+    const EncoderCalibrationState calibration_state = g_encoder_calibration.state();
+    const bool automatic_motion =
+        (calibration_state == EncoderCalibrationState::MoveToA) ||
+        (calibration_state == EncoderCalibrationState::SettleAtA) ||
+        (calibration_state == EncoderCalibrationState::SweepToB) ||
+        (calibration_state == EncoderCalibrationState::Processing) ||
+        (calibration_state == EncoderCalibrationState::Saving);
+    if (automatic_motion && !g_tmc_driver.is_enabled()) {
+        g_encoder_calibration.fail(EncoderCalibrationError::Driver);
+    }
+    const EncoderCalibration::Action action = g_encoder_calibration.update(
+        now_ms,
+        g_output_encoder_available,
+        g_encoder_angle_raw,
+        tmc5160_position_read());
+    if (action.zero_tmc_position) {
+        tmc5160_set_zero();
+    }
+    if (action.command_velocity) {
+        tmc5160_move(action.velocity_steps);
+    }
+    if (action.disable_driver && g_tmc_driver.is_enabled()) {
+        g_tmc_driver.disable();
+    }
+    if (g_encoder_calibration.blocks_normal_control()) {
+        g_control_mode = MOTOR_CONTROL_MODE_CALIBRATION;
+    }
+}
+
 void update_degraded_led(const uint32_t now_ms)
 {
     if (!g_output_encoder_degraded) {
@@ -258,6 +298,10 @@ extern "C" void motor_init(void)
     g_encoder_valid_streak = g_encoder_last_read_ok ? 1U : 0U;
     sync_tmc_offset_to_encoder();
     reset_fusion_tracking(now_ms);
+    g_encoder_calibration.initialize(
+        kRobotJointProfile->joint_index,
+        kRobotJointProfile->output_encoder_inverted != 0,
+        g_encoder_angle_raw);
     g_last_degraded_led_toggle_ms = now_ms;
 }
 
@@ -273,6 +317,7 @@ extern "C" void motor_update(const uint32_t now_ms)
     }
 
     update_encoder_status(now_ms);
+    update_calibration(now_ms);
     update_fusion_state(now_ms);
     update_faults(now_ms);
     update_degraded_led(now_ms);
@@ -289,7 +334,8 @@ extern "C" bool motor_command(
         return false;
     }
 
-    if (!g_fault_manager.remote_motion_allowed() || !g_tmc_driver.is_enabled()) {
+    if (g_encoder_calibration.blocks_normal_control() ||
+        !g_fault_manager.remote_motion_allowed() || !g_tmc_driver.is_enabled()) {
         return false;
     }
 
@@ -334,7 +380,8 @@ extern "C" bool motor_command(
 
 extern "C" bool motor_move(const int32_t velocity_command)
 {
-    if (!g_fault_manager.motion_allowed() || !g_tmc_driver.is_enabled()) {
+    if (g_encoder_calibration.blocks_normal_control() ||
+        !g_fault_manager.motion_allowed() || !g_tmc_driver.is_enabled()) {
         return false;
     }
     tmc5160_move(velocity_command);
@@ -367,7 +414,8 @@ extern "C" bool motor_move_radians_per_second(const float velocity_rad_s)
 
 extern "C" void motor_set_position_steps(const int32_t target_position_steps)
 {
-    if (!g_fault_manager.motion_allowed() || !g_tmc_driver.is_enabled()) {
+    if (g_encoder_calibration.blocks_normal_control() ||
+        !g_fault_manager.motion_allowed() || !g_tmc_driver.is_enabled()) {
         return;
     }
     g_fault_manager.note_velocity_command(HAL_GetTick(), false);
@@ -378,6 +426,9 @@ extern "C" void motor_set_position_steps(const int32_t target_position_steps)
 
 extern "C" bool motor_arm(const bool armed)
 {
+    if (g_encoder_calibration.blocks_normal_control()) {
+        return false;
+    }
     if (armed) {
         const bool enabled = g_tmc_driver.enable();
         if (enabled) {
@@ -450,6 +501,86 @@ extern "C" bool motor_encoder_get_diagnostics(motor_encoder_diagnostics* const d
     diagnostics->last_read_ok = encoder_diagnostics.last_read_ok;
     diagnostics->has_valid_angle = encoder_diagnostics.has_valid_angle;
     return true;
+}
+
+extern "C" bool motor_calibration_command(const int32_t command)
+{
+    if (command == 1) {
+        tmc5160_move(0);
+        if (!g_tmc_driver.disable()) {
+            g_encoder_calibration.fail(EncoderCalibrationError::Driver);
+            return false;
+        }
+        const bool started = g_encoder_calibration.begin(g_output_encoder_available, g_encoder_angle_raw);
+        if (started) {
+            g_control_mode = MOTOR_CONTROL_MODE_CALIBRATION;
+        }
+        return started;
+    }
+    if (command == 2) {
+        tmc5160_move(0);
+        g_encoder_calibration.abort();
+        if (g_tmc_driver.is_enabled()) {
+            g_tmc_driver.disable();
+        }
+        g_control_mode = MOTOR_CONTROL_MODE_CALIBRATION;
+        return true;
+    }
+    return false;
+}
+
+extern "C" bool motor_calibration_next(void)
+{
+    const bool starts_motion = g_encoder_calibration.state() == EncoderCalibrationState::Ready;
+    if (!g_encoder_calibration.advance(HAL_GetTick(), g_output_encoder_available, g_encoder_angle_raw)) {
+        return false;
+    }
+    if (starts_motion && !g_tmc_driver.enable()) {
+        g_encoder_calibration.fail(EncoderCalibrationError::Driver);
+        return false;
+    }
+    if (starts_motion) {
+        constexpr uint8_t kMaximumCalibrationCurrent = 5U;
+        const uint8_t calibration_current = std::min<uint8_t>(
+            static_cast<uint8_t>(kRobotJointProfile->init_irun),
+            kMaximumCalibrationCurrent);
+        tmc5160_set_run_current(calibration_current);
+    }
+    return true;
+}
+
+extern "C" int32_t motor_calibration_state(void)
+{
+    return static_cast<int32_t>(g_encoder_calibration.state());
+}
+
+extern "C" int32_t motor_calibration_error(void)
+{
+    return static_cast<int32_t>(g_encoder_calibration.error());
+}
+
+extern "C" int32_t motor_calibration_progress(void)
+{
+    return g_encoder_calibration.progress_percent();
+}
+
+extern "C" void motor_calibration_result(int32_t* const values, const uint8_t capacity, uint8_t* const count)
+{
+    if ((values == nullptr) || (count == nullptr) || (capacity < 10U)) {
+        return;
+    }
+    const encoder_calibration_data& data = g_encoder_calibration.data();
+    values[0] = motor_calibration_state();
+    values[1] = motor_calibration_error();
+    values[2] = motor_calibration_progress();
+    values[3] = data.limit_a_raw;
+    values[4] = data.limit_b_raw;
+    values[5] = data.manual_span_ticks;
+    values[6] = data.safe_margin_ticks;
+    values[7] = data.point_count;
+    values[8] = data.tmc_span_steps;
+    values[9] = g_encoder_calibration.manual_total_travel();
+    *count = 10U;
 }
 
 extern "C" float motor_fused_angle_manipulator(void)

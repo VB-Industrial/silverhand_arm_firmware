@@ -32,6 +32,8 @@ endif()
 set(USER_SOURCES
     Core/Src/fault_manager.cpp
     Core/Src/fault_log.c
+    Core/Src/encoder_calibration.cpp
+    Core/Src/encoder_calibration_storage.c
     Core/Src/communications.cpp
     Core/Src/motor.cpp
     Core/Src/tmc5160_state.cpp

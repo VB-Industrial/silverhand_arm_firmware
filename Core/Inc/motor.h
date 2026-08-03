@@ -45,6 +45,13 @@ int32_t motor_velocity_steps(void);
 uint16_t motor_encoder_raw(void);
 bool motor_encoder_get_diagnostics(motor_encoder_diagnostics* diagnostics);
 
+bool motor_calibration_command(int32_t command);
+bool motor_calibration_next(void);
+int32_t motor_calibration_state(void);
+int32_t motor_calibration_error(void);
+int32_t motor_calibration_progress(void);
+void motor_calibration_result(int32_t* values, uint8_t capacity, uint8_t* count);
+
 float motor_fused_angle_manipulator(void);
 float motor_fused_velocity_manipulator(void);
 

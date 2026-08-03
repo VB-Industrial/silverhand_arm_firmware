@@ -120,6 +120,8 @@ bool tmc5160_health_check(tmc5160_health_snapshot* snapshot);
 
 void tmc5160_effort(double effort, float max_effort, int8_t max_irun_scaler, int8_t init_irun);
 
+void tmc5160_set_run_current(uint8_t irun);
+
 void tmc5160_set_motor_direction(int8_t);
 
 void tmc5160_set_zero();

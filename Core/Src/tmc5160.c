@@ -292,6 +292,11 @@ void tmc5160_effort(double effort, float max_effort, int8_t max_irun_scaler, int
 	tmc5160_set_current_levels(IHOLD, IRUN, 0U);
 }
 
+void tmc5160_set_run_current(const uint8_t irun)
+{
+	tmc5160_set_current_levels(irun >> 1U, irun, 0U);
+}
+
 
 void tmc5160_acceleration(uint32_t acc)
 {

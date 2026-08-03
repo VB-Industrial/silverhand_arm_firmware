@@ -94,7 +94,7 @@ public:
 
 DirectVelocityReader* direct_velocity_reader;
 NodeInfoReader* nireader;
-static constexpr size_t NUMBER_OF_REGISTERS = 19;
+static constexpr size_t NUMBER_OF_REGISTERS = 23;
 
 RegistersHandler<NUMBER_OF_REGISTERS>* registers_handler;
 
@@ -373,6 +373,62 @@ void control_mode_handler(
     response._mutable = false;
 }
 
+void calibration_command_handler(
+    const uavcan_register_Value_1_0& v_in,
+    uavcan_register_Value_1_0& v_out,
+    RegisterAccessResponse::Type& response)
+{
+    int32_t command = 0;
+    if (try_get_register_int32(v_in, command)) {
+        motor_calibration_command(command);
+    }
+    set_register_int32(v_out, motor_calibration_state());
+    response.persistent = false;
+    response._mutable = true;
+}
+
+void calibration_next_handler(
+    const uavcan_register_Value_1_0& v_in,
+    uavcan_register_Value_1_0& v_out,
+    RegisterAccessResponse::Type& response)
+{
+    int32_t command = 0;
+    if (try_get_register_int32(v_in, command) && (command == 1)) {
+        motor_calibration_next();
+    }
+    set_register_int32(v_out, motor_calibration_state());
+    response.persistent = false;
+    response._mutable = true;
+}
+
+void calibration_state_handler(
+    const uavcan_register_Value_1_0&,
+    uavcan_register_Value_1_0& v_out,
+    RegisterAccessResponse::Type& response)
+{
+    const int32_t values[] = {
+        motor_calibration_state(),
+        motor_calibration_error(),
+        motor_calibration_progress(),
+    };
+    set_register_int32_array(v_out, values, std::size(values));
+    response.persistent = false;
+    response._mutable = false;
+}
+
+void calibration_result_handler(
+    const uavcan_register_Value_1_0&,
+    uavcan_register_Value_1_0& v_out,
+    RegisterAccessResponse::Type& response)
+{
+    int32_t values[10]{};
+    uint8_t count = 0U;
+    motor_calibration_result(values, static_cast<uint8_t>(std::size(values)), &count);
+    set_register_int32_array(v_out, values, count);
+    response.persistent = false;
+    response._mutable = false;
+}
+
 void fault_log_count_handler(
     const uavcan_register_Value_1_0&,
     uavcan_register_Value_1_0& v_out,
@@ -469,6 +525,10 @@ void setup_cyphal(FDCAN_HandleTypeDef* handler) {
             RegisterDefinition{"network_state", network_state_handler},
             RegisterDefinition{"controller_state", controller_state_handler},
             RegisterDefinition{"control_mode", control_mode_handler},
+            RegisterDefinition{"cal_cmd", calibration_command_handler},
+            RegisterDefinition{"cal_next", calibration_next_handler},
+            RegisterDefinition{"cal_state", calibration_state_handler},
+            RegisterDefinition{"cal_result", calibration_result_handler},
             RegisterDefinition{"fault_log_count", fault_log_count_handler},
             RegisterDefinition{"fault_log_last", fault_log_last_handler},
         },

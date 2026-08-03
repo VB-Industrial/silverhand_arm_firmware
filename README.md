@@ -242,6 +242,14 @@ The node exposes the following read-only Cyphal registers:
   from `controller_node_id` in `robot_config.h` updates this state. Operational
   joint commands are accepted only from this node.
 - `control_mode`: `0` hold, `1` servo, `2` direct, `3` calibration.
+- `cal_cmd`: write `1` to enter calibration (stop and disarm), or `2` to
+  abort (stop and disarm).
+- `cal_next`: write `1` to capture limit A, capture limit B, and finally start
+  the automatic pass, according to the current calibration state.
+- `cal_state`: `[state, error, progress_percent]`.
+- `cal_result`: `[state, error, progress, limit_a_raw, limit_b_raw,
+  signed_manual_span, safe_margin, point_count, tmc_span_steps,
+  manual_total_travel]`.
 - `enc_status`: `[last_read_ok, HAL_status, transfer_count, error_count,
   raw_16bit_frame, has_valid_angle]`. The working single-frame AS50xx exchange
   is intentionally unchanged; a failed transfer preserves the last valid angle.
@@ -264,6 +272,36 @@ Fault mask bits are:
 | 9 | EEPROM unavailable |
 | 10 | EEPROM fault-log write failure |
 | 11 | Velocity-command timeout (session-latched only) |
+
+Position-mismatch evaluation is temporarily disabled until output-encoder
+calibration is implemented and applied.
+
+## Output-encoder calibration
+
+Calibration is deliberately separate from the future fusion estimator. It
+builds and stores a correction table but does not yet apply it to joint state.
+
+1. Write `cal_cmd=1`. Firmware stops and disarms the driver.
+2. Move the joint by hand to either mechanical limit and write `cal_next=1`.
+3. Move it by hand through the usable path to the opposite limit and write
+   `cal_next=1`. Firmware tracks the signed, unwrapped encoder path, including
+   crossings through `0/16383` and a mechanical range of up to two encoder
+   revolutions.
+4. Remove hands and fixtures, then write `cal_next=1` again. Firmware arms at
+   limited current, moves back inside limit A, settles, and performs one
+   constant-speed measurement pass toward limit B.
+5. A table of up to 256 uniformly spaced `int16` correction points is checked
+   for monotonicity and saved to redundant EEPROM slots A/B with version,
+   sequence, CRC, valid marker, and readback verification. Completion and any
+   abort leave the driver disarmed; reboot before normal operation.
+
+The automatic path stays inside the manually captured physical limits. Its
+margin is 2 percent of the observed span, clamped to 16...200 encoder ticks.
+Writing `cal_cmd=2` aborts from any state.
+
+Calibration states are `0` idle, `1` wait limit A, `2` wait limit B, `3`
+ready, `4` move to A, `5` settle, `6` sweep to B, `7` processing, `8` saving,
+`9` complete, `10` failed, and `11` aborted.
 
 Only overtemperature shutdowns and short circuits are written to EEPROM.
 Network, communication and position-mismatch events remain session-local. The

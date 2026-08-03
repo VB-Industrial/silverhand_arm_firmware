@@ -9,6 +9,8 @@ constexpr uint8_t kPositionMismatchFaultCount = 3U;
 constexpr uint32_t kNetworkStartupGraceMs = 5000U;
 constexpr uint32_t kHeartbeatTimeoutMs = 2500U;
 constexpr uint32_t kVelocityCommandTimeoutMs = 1000U;
+// TODO: Enable after output-encoder calibration is applied.
+constexpr bool kPositionMismatchCheckEnabled = false;
 
 constexpr uint32_t kTmcFaultMask =
     FaultTmcCommunication |
@@ -93,7 +95,8 @@ FaultManager::UpdateResult FaultManager::update(
         latched_faults_ |= FaultCommandTimeout;
         stop_reason_ = StopReason::CommandTimeout;
     }
-    if (update_position_mismatch(has_output_encoder, encoder_angle_rad, tmc_angle_rad)) {
+    if (kPositionMismatchCheckEnabled &&
+        update_position_mismatch(has_output_encoder, encoder_angle_rad, tmc_angle_rad)) {
         result.stop_motion = true;
         stop_reason_ = StopReason::PositionMismatch;
     }
