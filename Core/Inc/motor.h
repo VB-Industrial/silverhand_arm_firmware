@@ -57,7 +57,7 @@ void motor_update(uint32_t now_ms);
 bool motor_command(float position_rad, float velocity_rad_s, float acceleration_rad_s2);
 bool motor_move(int32_t velocity_command);
 bool motor_move_radians_per_second(float velocity_rad_s);
-void motor_set_position_steps(int32_t target_position_steps);
+bool motor_set_position_radians(float target_position_rad);
 bool motor_arm(bool armed);
 bool motor_driver_enabled(void);
 int32_t motor_driver_state(void);

@@ -144,6 +144,33 @@ static bool try_get_register_int32(const uavcan_register_Value_1_0& value, int32
     return false;
 }
 
+static bool try_get_register_real32(const uavcan_register_Value_1_0& value, float& out)
+{
+    switch (value._tag_) {
+    case 12:
+        if (value.real64.value.count > 0) {
+            out = static_cast<float>(value.real64.value.elements[0]);
+            return true;
+        }
+        break;
+    case 13:
+        if (value.real32.value.count > 0) {
+            out = value.real32.value.elements[0];
+            return true;
+        }
+        break;
+    case 14:
+        if (value.real16.value.count > 0) {
+            out = value.real16.value.elements[0];
+            return true;
+        }
+        break;
+    default:
+        break;
+    }
+    return false;
+}
+
 static void set_register_int32(uavcan_register_Value_1_0& value, const int32_t data)
 {
     value._tag_ = 5;
@@ -204,14 +231,14 @@ void pos_set_handler(
     uavcan_register_Value_1_0& v_out,
     RegisterAccessResponse::Type& response
 ) {
-    int32_t target_position = 0;
-    if (try_get_register_int32(v_in, target_position)) {
-        motor_set_position_steps(target_position);
+    float target_position_rad = motor_fused_angle_manipulator();
+    if (try_get_register_real32(v_in, target_position_rad)) {
+        motor_set_position_radians(target_position_rad);
         HAL_GPIO_TogglePin(GPIOD, GPIO_PIN_2);
     }
 
-    set_register_int32(v_out, motor_position_steps());
-    response.persistent = true;
+    set_register_real32(v_out, motor_fused_angle_manipulator());
+    response.persistent = false;
     response._mutable = true;
 }
 

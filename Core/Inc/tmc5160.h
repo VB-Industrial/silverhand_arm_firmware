@@ -108,6 +108,8 @@ void tmc5160_apply_default_motion_profile();
 
 int32_t tmc5160_velocity_read();
 
+bool tmc5160_position_reached(void);
+
 int32_t tmc5160_read_reg(uint8_t reg_addr);
 
 void tmc5160_clear_gstat(uint32_t flags);

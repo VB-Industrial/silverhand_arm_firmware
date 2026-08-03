@@ -242,6 +242,13 @@ The node exposes the following read-only Cyphal registers:
   from `controller_node_id` in `robot_config.h` updates this state. Operational
   joint commands are accepted only from this node.
 - `control_mode`: `0` hold, `1` servo, `2` direct, `3` calibration.
+- `pos_set`: writing an absolute manipulator position in radians (`real32`)
+  immediately enters fused-angle SERVO settling. This one-shot service target does not require a
+  controller or network heartbeat and remains held until another command,
+  DIRECT mode, a fault, calibration, or reset cancels it. Its correction speed
+  is saturated at `0.1 rad/s` for every joint profile. The TMC5160 position
+  ramp uses `1 rad/s^2`; after the driver reports `position_reached`, the
+  fused-angle P loop removes the remaining output-position error.
 - `reset_reason`: reset-cause bit mask: bit 0 external/reset pin, bit 1
   brownout, bit 2 software reset, bit 3 IWDG, bit 4 WWDG, bit 5 low-power
   reset, and bit 6 option-byte reload. More than one bit may be set.
@@ -309,8 +316,8 @@ mode; DIRECT velocity commands use their separate `1131`-`1136` subjects.
 When two successive commands contain exactly the same position, firmware
 switches to closed-loop settling against the fused output angle. A proportional
 controller (`Kp = 4 s^-1`) commands joint velocity, saturated at `15 deg/s`.
-It stops inside `0.1 degree` and resumes correction if the output moves farther
-than `0.2 degree`. The position error is not angle-wrapped because the public
+It stops inside `0.01 degree` and resumes correction if the output moves farther
+than `0.03 degree`. The position error is not angle-wrapped because the public
 joint coordinate intentionally covers `-2*pi` through `+2*pi`.
 
 If the position-command stream becomes silent for 1 second, the latest target
@@ -370,7 +377,7 @@ infer a full backlash transition from a velocity reversal. Stored
 `backlash_steps` is converted to output radians and reported as the expected
 offset range in `fusion_diag`, but is not added to the position unconditionally.
 
-During normal control, firmware checks the absolute floating offset against
+When `SR_ENABLE_FUSION_OFFSET_FAULT` is enabled, firmware checks the absolute floating offset against
 `max(30 degrees, 1.5 * measured_backlash + 2 degrees)`. An excess must persist
 for 500 ms before fault bit 0 is session-latched. The response is stop and
 HOLD, without disarming the driver and without writing the event to EEPROM.
@@ -378,6 +385,8 @@ Normal and calibration motion commands are rejected until a controller reset or
 `fail_ack=1`. The acknowledgement is accepted only with a healthy calibrated
 output encoder and TMC5160; it clears the latch and reanchors the motor-relative
 angle to the current absolute encoder through the session-only fusion offset.
+The check is currently disabled in `robot_config.h`; `fusion_diag` continues to
+report the offset for analysis.
 
 The fused velocity is the filtered derivative of this final angle. If the
 output encoder becomes unavailable, relative tracking continues from TMC

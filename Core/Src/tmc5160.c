@@ -363,6 +363,11 @@ int32_t tmc5160_velocity_read()
 	return (int32_t)((float)rv / TMC5160_VELOCITY_TIME_SCALE);
 }
 
+bool tmc5160_position_reached(void)
+{
+	return (((uint32_t)tmc5160_read_reg(TMC5160_REG_RAMP_STAT) & (1UL << 9U)) != 0U);
+}
+
 int32_t tmc5160_read_reg(uint8_t reg_addr)
 {
 	uint8_t WData[5] = {0};
