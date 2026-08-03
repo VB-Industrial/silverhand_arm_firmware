@@ -263,12 +263,19 @@ void update_encoder_status(const uint32_t now_ms)
 
 void update_faults(const uint32_t now_ms)
 {
+    const Tmc5160Error tmc_error = g_tmc_driver.error();
+    const bool fusion_offset_available =
+        g_output_encoder_available &&
+        g_fusion_uses_calibrated_encoder &&
+        !g_encoder_calibration.blocks_normal_control() &&
+        g_tmc_driver.is_enabled() &&
+        (tmc_error == Tmc5160Error::None);
     const FaultManager::UpdateResult result = g_fault_manager.update(
         now_ms,
-        g_output_encoder_available,
-        encoder_angle_radians(),
-        tmc_corrected_angle_radians(),
-        g_tmc_driver.error(),
+        fusion_offset_available,
+        g_fusion_offset_rad,
+        g_fusion_backlash_rad,
+        tmc_error,
         g_tmc_driver.fault_snapshot());
 
     if (result.stop_motion) {

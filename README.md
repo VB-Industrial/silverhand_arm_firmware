@@ -234,7 +234,7 @@ The node exposes the following read-only Cyphal registers:
 - `fault_active` and `fault_latched`: current and session-latched fault masks.
 - `fault_level`: `0` nominal, `1` warning, `2` degraded, `3` fault.
 - `stop_reason`: last commanded stop cause: `0` none, `1` network offline,
-  `2` position mismatch, `3` TMC5160 fault, `4` controller offline,
+  `2` fusion offset exceeded, `3` TMC5160 fault, `4` controller offline,
   `5` velocity-command timeout.
 - `network_state`: `0` starting, `1` online, `2` offline. A heartbeat from any
   node marks the network online.
@@ -278,7 +278,7 @@ Fault mask bits are:
 
 | Bit | Meaning |
 | --- | --- |
-| 0 | Output encoder and TMC5160 position mismatch |
+| 0 | Fusion offset exceeded its plausible backlash range |
 | 1 | TMC5160 communication failure |
 | 2 | TMC5160 enable-pin readback failure |
 | 3 | TMC5160 configuration readback failure |
@@ -290,9 +290,6 @@ Fault mask bits are:
 | 9 | EEPROM unavailable |
 | 10 | EEPROM fault-log write failure |
 | 11 | Velocity-command timeout (session-latched only) |
-
-Position-mismatch evaluation remains temporarily disabled while the calibrated
-joint-angle estimator is commissioned on hardware.
 
 ## Output-encoder calibration
 
@@ -343,6 +340,13 @@ partially or completely as mechanical backlash is taken up; firmware does not
 infer a full backlash transition from a velocity reversal. Stored
 `backlash_steps` is converted to output radians and reported as the expected
 offset range in `fusion_diag`, but is not added to the position unconditionally.
+
+During normal control, firmware checks the absolute floating offset against
+`max(5 degrees, 1.5 * measured_backlash + 2 degrees)`. An excess must persist
+for 500 ms before fault bit 0 is session-latched. The response is stop and
+HOLD, without disarming the driver and without writing the event to EEPROM.
+`fail_ack` clears the latch and reanchors the estimator to the current absolute
+encoder position.
 
 The fused velocity is the filtered derivative of this final angle. If the
 output encoder becomes unavailable, relative tracking continues from TMC

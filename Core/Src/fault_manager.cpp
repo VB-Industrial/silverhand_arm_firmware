@@ -1,16 +1,17 @@
 #include "fault_manager.hpp"
 
-#include "utility.h"
+#include <algorithm>
+#include <cmath>
 
 namespace
 {
-constexpr float kPositionMismatchThresholdRad = 10.0F * static_cast<float>(M_PI) / 180.0F;
-constexpr uint8_t kPositionMismatchFaultCount = 3U;
+constexpr float kFusionOffsetMinimumLimitRad = 5.0F * static_cast<float>(M_PI) / 180.0F;
+constexpr float kFusionOffsetMarginRad = 2.0F * static_cast<float>(M_PI) / 180.0F;
+constexpr float kFusionOffsetBacklashScale = 1.5F;
+constexpr uint32_t kFusionOffsetDebounceMs = 500U;
 constexpr uint32_t kNetworkStartupGraceMs = 5000U;
 constexpr uint32_t kHeartbeatTimeoutMs = 2500U;
 constexpr uint32_t kVelocityCommandTimeoutMs = 1000U;
-// TODO: Enable after output-encoder calibration is applied.
-constexpr bool kPositionMismatchCheckEnabled = false;
 
 constexpr uint32_t kTmcFaultMask =
     FaultTmcCommunication |
@@ -70,9 +71,9 @@ void FaultManager::note_velocity_command(const uint32_t now_ms, const bool activ
 
 FaultManager::UpdateResult FaultManager::update(
     const uint32_t now_ms,
-    const bool has_output_encoder,
-    const float encoder_angle_rad,
-    const float tmc_angle_rad,
+    const bool fusion_offset_available,
+    const float fusion_offset_rad,
+    const float backlash_rad,
     const Tmc5160Error tmc_error,
     const tmc5160_fault_snapshot& tmc_snapshot)
 {
@@ -80,13 +81,13 @@ FaultManager::UpdateResult FaultManager::update(
 
     if (update_network(now_ms)) {
         result.stop_motion = true;
-        if (((active_faults_ & kFaultLevelMask) == 0U) && !mismatch_fault_latched_) {
+        if (((active_faults_ & kFaultLevelMask) == 0U) && !fusion_offset_fault_latched_) {
             stop_reason_ = StopReason::NetworkOffline;
         }
     }
     if (update_controller(now_ms)) {
         result.stop_motion = true;
-        if (((active_faults_ & kFaultLevelMask) == 0U) && !mismatch_fault_latched_) {
+        if (((active_faults_ & kFaultLevelMask) == 0U) && !fusion_offset_fault_latched_) {
             stop_reason_ = StopReason::ControllerOffline;
         }
     }
@@ -95,10 +96,13 @@ FaultManager::UpdateResult FaultManager::update(
         latched_faults_ |= FaultCommandTimeout;
         stop_reason_ = StopReason::CommandTimeout;
     }
-    if (kPositionMismatchCheckEnabled &&
-        update_position_mismatch(has_output_encoder, encoder_angle_rad, tmc_angle_rad)) {
+    if (update_fusion_offset(
+            now_ms,
+            fusion_offset_available,
+            fusion_offset_rad,
+            backlash_rad)) {
         result.stop_motion = true;
-        stop_reason_ = StopReason::PositionMismatch;
+        stop_reason_ = StopReason::FusionOffsetExceeded;
     }
 
     const uint32_t previous_tmc_faults = active_faults_ & kFaultLevelMask;
@@ -125,12 +129,12 @@ FaultManager::UpdateResult FaultManager::update(
 
 bool FaultManager::acknowledge()
 {
-    const bool sync_offset = (latched_faults_ & FaultPositionMismatch) != 0U;
+    const bool sync_offset = (latched_faults_ & FaultFusionOffsetExceeded) != 0U;
     if (sync_offset) {
-        active_faults_ &= ~FaultPositionMismatch;
-        mismatch_warning_count_ = 0U;
-        mismatch_active_ = false;
-        mismatch_fault_latched_ = false;
+        active_faults_ &= ~FaultFusionOffsetExceeded;
+        fusion_offset_exceeded_since_ms_ = 0U;
+        fusion_offset_exceeded_ = false;
+        fusion_offset_fault_latched_ = false;
     }
 
     latched_faults_ &= active_faults_;
@@ -140,7 +144,7 @@ bool FaultManager::acknowledge()
 
 bool FaultManager::motion_allowed() const
 {
-    return !mismatch_fault_latched_;
+    return !fusion_offset_fault_latched_;
 }
 
 bool FaultManager::remote_motion_allowed() const
@@ -226,36 +230,44 @@ bool FaultManager::update_command_watchdog(const uint32_t now_ms)
     return true;
 }
 
-bool FaultManager::update_position_mismatch(
+bool FaultManager::update_fusion_offset(
+    const uint32_t now_ms,
     const bool available,
-    const float encoder_angle_rad,
-    const float tmc_angle_rad)
+    const float offset_rad,
+    const float backlash_rad)
 {
-    if (!available) {
-        active_faults_ &= ~FaultPositionMismatch;
-        mismatch_active_ = false;
+    if (!available || !std::isfinite(offset_rad) || !std::isfinite(backlash_rad)) {
+        active_faults_ &= ~FaultFusionOffsetExceeded;
+        fusion_offset_exceeded_since_ms_ = 0U;
+        fusion_offset_exceeded_ = false;
         return false;
     }
 
-    const float mismatch_rad = angular_abs_diff_radians(encoder_angle_rad, tmc_angle_rad);
-    if (mismatch_rad <= kPositionMismatchThresholdRad) {
-        active_faults_ &= ~FaultPositionMismatch;
-        mismatch_active_ = false;
+    const float limit_rad = std::max(
+        kFusionOffsetMinimumLimitRad,
+        (kFusionOffsetBacklashScale * std::max(backlash_rad, 0.0F)) + kFusionOffsetMarginRad);
+    if (std::fabs(offset_rad) <= limit_rad) {
+        active_faults_ &= ~FaultFusionOffsetExceeded;
+        fusion_offset_exceeded_since_ms_ = 0U;
+        fusion_offset_exceeded_ = false;
         return false;
     }
 
-    active_faults_ |= FaultPositionMismatch;
-    if (mismatch_active_) {
+    if (!fusion_offset_exceeded_) {
+        fusion_offset_exceeded_ = true;
+        fusion_offset_exceeded_since_ms_ = now_ms;
         return false;
     }
 
-    mismatch_active_ = true;
-    if (mismatch_warning_count_ < kPositionMismatchFaultCount) {
-        ++mismatch_warning_count_;
+    if ((now_ms - fusion_offset_exceeded_since_ms_) >= kFusionOffsetDebounceMs) {
+        active_faults_ |= FaultFusionOffsetExceeded;
+        if (!fusion_offset_fault_latched_) {
+            fusion_offset_fault_latched_ = true;
+            return true;
+        }
     }
-    if (mismatch_warning_count_ >= kPositionMismatchFaultCount) {
-        mismatch_fault_latched_ = true;
-        return true;
+    if (fusion_offset_fault_latched_) {
+        active_faults_ |= FaultFusionOffsetExceeded;
     }
     return false;
 }
@@ -326,13 +338,13 @@ void FaultManager::update_persistent_log(
 
 void FaultManager::update_level()
 {
-    if (((active_faults_ & kFaultLevelMask) != 0U) || mismatch_fault_latched_) {
+    if (((active_faults_ & kFaultLevelMask) != 0U) || fusion_offset_fault_latched_) {
         level_ = FaultLevel::Fault;
     } else if ((network_state_ == NetworkState::Offline) ||
                (controller_state_ == NetworkState::Offline) ||
                ((active_faults_ & (FaultEepromUnavailable | FaultEepromWrite)) != 0U)) {
         level_ = FaultLevel::Degraded;
-    } else if (((latched_faults_ & (FaultPositionMismatch | FaultCommandTimeout)) != 0U) ||
+    } else if (((latched_faults_ & (FaultFusionOffsetExceeded | FaultCommandTimeout)) != 0U) ||
                ((active_faults_ & FaultTmcOvertemperatureWarning) != 0U)) {
         level_ = FaultLevel::Warning;
     } else {

@@ -8,7 +8,7 @@
 enum Fault : uint32_t
 {
     FaultNone = 0U,
-    FaultPositionMismatch = 1UL << 0U,
+    FaultFusionOffsetExceeded = 1UL << 0U,
     FaultTmcCommunication = 1UL << 1U,
     FaultTmcEnableReadback = 1UL << 2U,
     FaultTmcConfiguration = 1UL << 3U,
@@ -41,7 +41,7 @@ enum class StopReason : int32_t
 {
     None = 0,
     NetworkOffline = 1,
-    PositionMismatch = 2,
+    FusionOffsetExceeded = 2,
     TmcDriver = 3,
     ControllerOffline = 4,
     CommandTimeout = 5,
@@ -60,9 +60,9 @@ public:
     void note_velocity_command(uint32_t now_ms, bool active);
     UpdateResult update(
         uint32_t now_ms,
-        bool has_output_encoder,
-        float encoder_angle_rad,
-        float tmc_angle_rad,
+        bool fusion_offset_available,
+        float fusion_offset_rad,
+        float backlash_rad,
         Tmc5160Error tmc_error,
         const tmc5160_fault_snapshot& tmc_snapshot);
 
@@ -84,7 +84,11 @@ private:
     bool update_network(uint32_t now_ms);
     bool update_controller(uint32_t now_ms);
     bool update_command_watchdog(uint32_t now_ms);
-    bool update_position_mismatch(bool available, float encoder_angle_rad, float tmc_angle_rad);
+    bool update_fusion_offset(
+        uint32_t now_ms,
+        bool available,
+        float offset_rad,
+        float backlash_rad);
     void update_tmc_faults(Tmc5160Error error, const tmc5160_fault_snapshot& snapshot);
     void update_persistent_log(uint32_t now_ms, const tmc5160_fault_snapshot& snapshot);
     void update_level();
@@ -101,11 +105,11 @@ private:
     uint32_t last_heartbeat_ms_ = 0U;
     uint32_t last_controller_heartbeat_ms_ = 0U;
     uint32_t last_velocity_command_ms_ = 0U;
-    uint8_t mismatch_warning_count_ = 0U;
+    uint32_t fusion_offset_exceeded_since_ms_ = 0U;
     bool heartbeat_seen_ = false;
     bool controller_heartbeat_seen_ = false;
     bool velocity_command_active_ = false;
-    bool mismatch_active_ = false;
-    bool mismatch_fault_latched_ = false;
+    bool fusion_offset_exceeded_ = false;
+    bool fusion_offset_fault_latched_ = false;
     bool eeprom_write_failed_ = false;
 };
