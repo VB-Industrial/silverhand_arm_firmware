@@ -274,6 +274,10 @@ The node exposes the following read-only Cyphal registers:
   floating_offset, fused_angle, encoder_residual, measured_backlash,
   calibrated_encoder_active]`, in manipulator radians. The final element is
   `1.0` when the EEPROM correction table and geometric zero are active.
+- `servo_diag`: `[state, target_position, position_error, commanded_velocity,
+  command_age_ms]`. Angles and velocity use manipulator radians and rad/s.
+  State is `0` inactive, `1` feed-forward tracking, `2` fused-angle settling,
+  or `3` at target.
 - `fault_log_count`: sequence number of the latest persistent fault record.
 - `fault_log_last`: `[sequence, uptime_ms, fault_mask, GSTAT, DRV_STATUS]`.
 
@@ -293,6 +297,28 @@ Fault mask bits are:
 | 9 | EEPROM unavailable |
 | 10 | EEPROM fault-log write failure |
 | 11 | Velocity-command timeout (session-latched only) |
+
+## SERVO control
+
+The per-joint `Planar.0.1` command is interpreted as a trajectory point. While
+successive position targets differ, the TMC5160 runs in position mode toward
+each target using the absolute angular velocity supplied in the message. The
+acceleration field is currently reserved and does not select another control
+mode; DIRECT velocity commands use their separate `1131`-`1136` subjects.
+
+When two successive commands contain exactly the same position, firmware
+switches to closed-loop settling against the fused output angle. A proportional
+controller (`Kp = 4 s^-1`) commands joint velocity, saturated at `15 deg/s`.
+It stops inside `0.1 degree` and resumes correction if the output moves farther
+than `0.2 degree`. The position error is not angle-wrapped because the public
+joint coordinate intentionally covers `-2*pi` through `+2*pi`.
+
+If the position-command stream becomes silent for 1 second, the latest target
+is retained and the same fused-angle settling loop takes over. It remains a
+closed-loop position HOLD while heartbeat from `controller_node_id` is alive.
+Loss of that controller heartbeat, a fault, a DIRECT command, or entry into
+calibration cancels the target and commands stop/HOLD. A missing SERVO update
+therefore does not raise the DIRECT velocity-command-timeout fault.
 
 ## Output-encoder calibration
 
@@ -420,10 +446,11 @@ every 100 ms. An invalid `IOIN` response is retried immediately; if both reads
 fail, firmware raises `DRV_EN` and enters the TMC communication-fault state.
 Configuration registers are verified only after driver initialization or rearm.
 
-Raw velocity commands must be refreshed at least once every 1 second (1000 ms). On timeout the
-firmware commands zero velocity and keeps the driver armed. Loss of controller
-heartbeat has the same stop/hold behavior; heartbeats from other nodes continue
-to indicate a live network but do not keep controller state online.
+Raw DIRECT velocity commands must be refreshed at least once every 1 second
+(1000 ms). On timeout the firmware commands zero velocity and keeps the driver
+armed. Loss of controller heartbeat has the same stop/hold behavior; heartbeats
+from other nodes continue to indicate a live network but do not keep controller
+state online.
 
 The hardware IWDG starts after boot-time peripheral, Cyphal, motor, and EEPROM
 initialization. Its nominal timeout is 2 seconds. Firmware refreshes it only

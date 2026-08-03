@@ -94,7 +94,7 @@ void tmc5160_init(int8_t init_irun);
  *
  *
  */
-void tmc5160_position(int32_t position, int32_t velocity);
+void tmc5160_position(int32_t position, int32_t velocity_steps_per_second);
 
 void tmc5160_move(int32_t vel);
 

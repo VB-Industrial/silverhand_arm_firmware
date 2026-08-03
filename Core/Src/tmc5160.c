@@ -64,11 +64,11 @@
 
 
 #include "tmc5160.h"
-#include <stdlib.h>
-
 #define TMC5160_GCONF_EN_PWM_MODE_MASK  (1UL << 2U)
 #define TMC5160_GCONF_SHAFT_MASK        (1UL << 4U)
 #define TMC5160_GCONF_READBACK_MASK     0x0003FFFFUL
+#define TMC5160_VELOCITY_TIME_SCALE     1.3981013F
+#define TMC5160_VELOCITY_REGISTER_MAX   0x007FFFFFUL
 
 static uint32_t g_gconf_shadow = 0U;
 
@@ -176,6 +176,19 @@ static void tmc5160_set_xtarget(const int32_t position)
 	tmc5160_write_reg32(TMC5160_REG_XTARGET, (uint32_t) position);
 }
 
+static uint32_t tmc5160_velocity_register_value(const int32_t velocity_steps_per_second)
+{
+	// TMC5160 velocity registers use fCLK/2^24 units, whereas the public driver
+	// API consistently uses motor microsteps per second.
+	const int64_t magnitude = (velocity_steps_per_second < 0)
+		? -(int64_t)velocity_steps_per_second
+		: (int64_t)velocity_steps_per_second;
+	const float scaled = (float)magnitude * TMC5160_VELOCITY_TIME_SCALE;
+	return (scaled >= (float)TMC5160_VELOCITY_REGISTER_MAX)
+		? TMC5160_VELOCITY_REGISTER_MAX
+		: (uint32_t)scaled;
+}
+
 static void tmc5160_set_chopconf_spreadcycle_default(void)
 {
 	tmc5160_write_reg32(TMC5160_REG_CHOPCONF, 0x000000C3U);
@@ -227,18 +240,18 @@ static void tmc5160_set_tpwm_thrs(const uint32_t value)
 
 void tmc5160_position(int32_t position, int32_t velocity)
 {
+	const uint32_t register_velocity = tmc5160_velocity_register_value(velocity);
 	tmc5160_set_rampmode_position();
-	tmc5160_set_vmax(velocity);
+	tmc5160_set_v1(register_velocity / 10U);
+	tmc5160_set_vmax(register_velocity);
 	tmc5160_set_xtarget(position);
 }
 
 void tmc5160_move(int32_t vel)
 {
+	const uint32_t vel_to_go = tmc5160_velocity_register_value(vel);
 
-	int32_t vel_to_go;
-	vel_to_go = (int32_t)(vel*1.3981013); //1.3981.. is the time ratio according to "Microstep velocity time reference t for velocities: TSTEP = fCLK / fSTEP" see ref on p. 81 of datasheet
-
-	if (vel_to_go < 0) //select positive or negative mode depending on vel sign
+	if (vel < 0) //select positive or negative mode depending on vel sign
 	{
 		  tmc5160_set_rampmode_velocity_negative();
 	}
@@ -246,13 +259,8 @@ void tmc5160_move(int32_t vel)
 	{
 		  tmc5160_set_rampmode_velocity_positive();
 	}
-	vel_to_go = abs(vel_to_go);
-
-	int32_t v1;
-	v1 = (int32_t)(vel_to_go*0.1);
-
-	tmc5160_set_v1((uint32_t) v1);
-	tmc5160_set_vmax((uint32_t) vel_to_go);
+	tmc5160_set_v1(vel_to_go / 10U);
+	tmc5160_set_vmax(vel_to_go);
 }
 
 void tmc5160_apply_default_motion_profile()
@@ -268,16 +276,9 @@ void tmc5160_apply_default_motion_profile()
 
 void tmc5160_velocity(int32_t vel)
 {
-
-	int32_t vel_to_go;
-	vel_to_go = (int32_t)(vel*1.3981013); //1.3981.. is the time ratio according to "Microstep velocity time reference t for velocities: TSTEP = fCLK / fSTEP" see ref on p. 81 of datasheet
-	vel_to_go = abs(vel_to_go);
-
-	int32_t V1;
-	V1 = (int32_t)(vel_to_go*0.1);
-
-	tmc5160_set_v1((uint32_t) V1);
-	tmc5160_set_vmax((uint32_t) vel_to_go);
+	const uint32_t vel_to_go = tmc5160_velocity_register_value(vel);
+	tmc5160_set_v1(vel_to_go / 10U);
+	tmc5160_set_vmax(vel_to_go);
 
 }
 
@@ -359,7 +360,7 @@ int32_t tmc5160_velocity_read()
     int32_t rv = 0;
     rv = sign_extend_bits_to_32(response, 24);
 
-	return (int32_t)(rv / 1.3981013); //1.3981.. is the time ratio according to "Microstep velocity time reference t for velocities: TSTEP = fCLK / fSTEP" see ref on p. 81 of datasheet
+	return (int32_t)((float)rv / TMC5160_VELOCITY_TIME_SCALE);
 }
 
 int32_t tmc5160_read_reg(uint8_t reg_addr)

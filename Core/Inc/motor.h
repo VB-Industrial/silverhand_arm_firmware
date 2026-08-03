@@ -29,6 +29,21 @@ typedef struct motor_fusion_diagnostics {
     bool calibrated_encoder;
 } motor_fusion_diagnostics;
 
+typedef enum motor_servo_state {
+    MOTOR_SERVO_STATE_INACTIVE = 0,
+    MOTOR_SERVO_STATE_TRACKING = 1,
+    MOTOR_SERVO_STATE_SETTLING = 2,
+    MOTOR_SERVO_STATE_AT_TARGET = 3,
+} motor_servo_state;
+
+typedef struct motor_servo_diagnostics {
+    float target_position_rad;
+    float position_error_rad;
+    float command_velocity_rad_s;
+    uint32_t command_age_ms;
+    motor_servo_state state;
+} motor_servo_diagnostics;
+
 typedef enum motor_control_mode {
     MOTOR_CONTROL_MODE_HOLD = 0,
     MOTOR_CONTROL_MODE_SERVO = 1,
@@ -55,6 +70,7 @@ int32_t motor_velocity_steps(void);
 uint16_t motor_encoder_raw(void);
 bool motor_encoder_get_diagnostics(motor_encoder_diagnostics* diagnostics);
 bool motor_fusion_get_diagnostics(motor_fusion_diagnostics* diagnostics);
+bool motor_servo_get_diagnostics(motor_servo_diagnostics* diagnostics);
 
 bool motor_calibration_command(int32_t command);
 bool motor_auto_calibration_start(void);
