@@ -11,7 +11,7 @@ extern "C" {
 
 static const uint8_t SR_JOINT_INDEX = 2U;
 
-static const bool SR_ENABLE_FUSION_OFFSET_FAULT = false;
+static const bool SR_ENABLE_FUSION_OFFSET_FAULT = true;
 
 typedef struct robot_joint_profile {
     uint8_t joint_index;

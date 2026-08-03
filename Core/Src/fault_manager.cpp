@@ -5,7 +5,7 @@
 
 namespace
 {
-constexpr float kFusionOffsetMinimumLimitRad = 30.0F * static_cast<float>(M_PI) / 180.0F;
+constexpr float kFusionOffsetMinimumLimitRad = 15.0F * static_cast<float>(M_PI) / 180.0F;
 constexpr float kFusionOffsetMarginRad = 2.0F * static_cast<float>(M_PI) / 180.0F;
 constexpr float kFusionOffsetBacklashScale = 1.5F;
 constexpr uint32_t kFusionOffsetDebounceMs = 500U;

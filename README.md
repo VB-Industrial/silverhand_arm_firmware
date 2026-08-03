@@ -383,15 +383,15 @@ infer a full backlash transition from a velocity reversal. Stored
 offset range in `fusion_diag`, but is not added to the position unconditionally.
 
 When `SR_ENABLE_FUSION_OFFSET_FAULT` is enabled, firmware checks the absolute floating offset against
-`max(30 degrees, 1.5 * measured_backlash + 2 degrees)`. An excess must persist
+`max(15 degrees, 1.5 * measured_backlash + 2 degrees)`. An excess must persist
 for 500 ms before fault bit 0 is session-latched. The response is stop and
 HOLD, without disarming the driver and without writing the event to EEPROM.
 Normal and calibration motion commands are rejected until a controller reset or
 `fail_ack=1`. The acknowledgement is accepted only with a healthy calibrated
 output encoder and TMC5160; it clears the latch and reanchors the motor-relative
 angle to the current absolute encoder through the session-only fusion offset.
-The check is currently disabled in `robot_config.h`; `fusion_diag` continues to
-report the offset for analysis.
+The check is enabled by default in `robot_config.h`; `fusion_diag` reports the
+offset for analysis.
 
 The fused velocity is the filtered derivative of this final angle. If the
 output encoder becomes unavailable, relative tracking continues from TMC
