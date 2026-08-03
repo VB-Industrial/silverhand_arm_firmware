@@ -275,7 +275,7 @@ every 100 ms. An invalid `IOIN` response is retried immediately; if both reads
 fail, firmware raises `DRV_EN` and enters the TMC communication-fault state.
 Configuration registers are verified only after driver initialization or rearm.
 
-Raw velocity commands must be refreshed at least every 500 ms. On timeout the
+Raw velocity commands must be refreshed at least once every 1 second (1000 ms). On timeout the
 firmware commands zero velocity and keeps the driver armed. Loss of controller
 heartbeat has the same stop/hold behavior; heartbeats from other nodes continue
 to indicate a live network but do not keep controller state online.

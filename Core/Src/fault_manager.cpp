@@ -8,7 +8,7 @@ constexpr float kPositionMismatchThresholdRad = 10.0F * static_cast<float>(M_PI)
 constexpr uint8_t kPositionMismatchFaultCount = 3U;
 constexpr uint32_t kNetworkStartupGraceMs = 5000U;
 constexpr uint32_t kHeartbeatTimeoutMs = 2500U;
-constexpr uint32_t kVelocityCommandTimeoutMs = 500U;
+constexpr uint32_t kVelocityCommandTimeoutMs = 1000U;
 
 constexpr uint32_t kTmcFaultMask =
     FaultTmcCommunication |
