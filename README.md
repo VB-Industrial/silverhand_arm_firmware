@@ -229,23 +229,16 @@ Cyphal command and feedback subjects are defined per joint in `robot_config.h`:
 - `1131`–`1136`: per-joint `angular_velocity.Scalar.1.0` DIRECT commands
   in joint rad/s from the controller.
 
-The node exposes the following read-only Cyphal registers:
+The node exposes a compact public interface of nine Cyphal registers:
 
-- `fault_active` and `fault_latched`: current and session-latched fault masks.
-- `fault_level`: `0` nominal, `1` warning, `2` degraded, `3` fault.
-- `stop_reason`: last commanded stop cause: `0` none, `1` network offline,
-  `2` fusion offset exceeded, `3` TMC5160 fault, `4` controller offline,
-  `5` velocity-command timeout.
-- `network_state`: `0` starting, `1` online, `2` offline. A heartbeat from any
-  node marks the network online.
-- `controller_state`: `0` starting, `1` online, `2` offline. Only heartbeat
-  from `controller_node_id` in `robot_config.h` updates this state. Operational
-  joint commands are accepted only from this node.
-- `control_mode`: `0` hold, `1` servo, `2` direct, `3` calibration.
-- `limit_diag`: `[active, hard_lower, soft_lower, soft_upper, hard_upper,
-  current_position, minimum_velocity, maximum_velocity]` in radians and
-  radians per second. Limits are active when stored calibration and geometric
-  zero data define a valid range.
+- `pos_get` (read-only `real32[19]`): `[encoder_raw, tmc_raw_steps,
+  encoder_angle, tmc_angle, fusion_offset, fused_angle, fused_velocity,
+  encoder_residual, measured_backlash, control_mode, calibrated,
+  hard_lower, soft_lower, soft_upper, hard_upper, allowed_velocity_min,
+  allowed_velocity_max, calibration_state, calibration_progress]`. Angles are
+  in manipulator radians and velocities in rad/s. `control_mode` is `0` hold,
+  `1` servo, `2` direct, or `3` calibration. Raw integer positions are encoded
+  as `real32` because Cyphal register arrays cannot mix element types.
 - `pos_set`: writing an absolute manipulator position in radians (`real32`)
   immediately enters fused-angle SERVO settling. This one-shot service target does not require a
   controller or network heartbeat and remains held until another command,
@@ -253,44 +246,33 @@ The node exposes the following read-only Cyphal registers:
   is saturated at `0.1 rad/s` for every joint profile. The TMC5160 position
   ramp uses `1 rad/s^2`; after the driver reports `position_reached`, the
   fused-angle P loop removes the remaining output-position error.
-- `reset_reason`: reset-cause bit mask: bit 0 external/reset pin, bit 1
-  brownout, bit 2 software reset, bit 3 IWDG, bit 4 WWDG, bit 5 low-power
-  reset, and bit 6 option-byte reload. More than one bit may be set.
-- `cal_cmd`: write `1` to enter calibration (stop and disarm), or `2` to
-  abort (stop and disarm).
 - `auto_cal`: reading this trigger register starts a fully automatic low-current
-  limit search and calibration; use `cal_state` for status instead of reading
-  `auto_cal` again.
+  limit search and calibration; use the final two `pos_get` fields for status.
 - `luft_cal`: reading this trigger register starts only the low-current
   backlash-rocking stage around the current position. It preserves the stored
-  limits, correction table, TMC span, and geometric zero; use `cal_state` for
-  status instead of reading `luft_cal` again.
-- `zero_cal`: reading this trigger register at the known geometric-zero pose
+  limits, correction table, TMC span, and geometric zero.
+- `zero_set`: reading this trigger register at the known geometric-zero pose
   stops the motor, stores the current output-encoder raw value, and sets the
-  TMC5160 position to zero. Use `cal_result` for status; every read triggers a
-  new zero calibration.
-- `cal_next`: write `1` to capture limit A, capture limit B, and finally start
-  the automatic pass, according to the current calibration state.
-- `cal_state`: `[state, error, progress_percent]`.
-- `cal_result`: `[state, error, progress, limit_a_raw, limit_b_raw,
-  signed_manual_span, safe_margin, point_count, tmc_span_steps,
-  zero_valid, zero_raw, backlash_steps, manual_total_travel]`. The reported
-  TMC span is the signed average of the forward and reverse measurement spans;
-  backlash is the positive median effective lost motion from six midpoint
-  reversals, expressed in TMC microsteps.
-- `enc_status`: `[last_read_ok, HAL_status, transfer_count, error_count,
-  raw_16bit_frame, has_valid_angle]`. The working single-frame AS50xx exchange
-  is intentionally unchanged; a failed transfer preserves the last valid angle.
-- `fusion_diag`: `[calibrated_encoder_angle, calibrated_tmc_angle,
-  floating_offset, fused_angle, encoder_residual, measured_backlash,
-  calibrated_encoder_active]`, in manipulator radians. The final element is
-  `1.0` when the EEPROM correction table and geometric zero are active.
-- `servo_diag`: `[state, target_position, position_error, commanded_velocity,
-  command_age_ms]`. Angles and velocity use manipulator radians and rad/s.
-  State is `0` inactive, `1` feed-forward tracking, `2` fused-angle settling,
-  or `3` at target.
-- `fault_log_count`: sequence number of the latest persistent fault record.
-- `fault_log_last`: `[sequence, uptime_ms, fault_mask, GSTAT, DRV_STATUS]`.
+  TMC5160 position to zero. Every read triggers a new zero calibration.
+- `move`: debug DIRECT velocity command in motor microsteps/s. Use `--` before
+  a negative value, for example `y r 26 move -- -20000`; write zero to stop.
+- `arm`: write `0` to disarm or `1` to arm the TMC5160 driver; reading returns
+  the enable state. This is a service/debug control; normal startup arms
+  automatically.
+- `fail_ack`: write `1` to acknowledge a recoverable session-latched fault.
+- `errors` (read-only `int32[22]`): `[active_mask, latched_mask, fault_level,
+  stop_reason, network_state, controller_state, tmc_state, tmc_error,
+  reset_reason, encoder_read_ok, encoder_hal_status, encoder_transfer_count,
+  encoder_error_count, encoder_raw_frame, encoder_valid, calibration_state,
+  calibration_error, eeprom_log_sequence, eeprom_log_uptime,
+  eeprom_log_fault_mask, eeprom_log_gstat, eeprom_log_drv_status]`.
+
+`fault_level` is `0` nominal, `1` warning, `2` degraded, or `3` fault.
+`stop_reason` is `0` none, `1` network offline, `2` motor slip, `3` TMC5160
+fault, `4` controller offline, or `5` velocity-command timeout. Network and
+controller states are `0` starting, `1` online, or `2` offline. Reset-reason
+bits are: 0 external/reset pin, 1 brownout, 2 software, 3 IWDG, 4 WWDG,
+5 low-power, and 6 option-byte reload.
 
 Fault mask bits are:
 
@@ -380,7 +362,7 @@ offset required to return to its edge is applied. The offset can therefore move
 partially or completely as mechanical backlash is taken up; firmware does not
 infer a full backlash transition from a velocity reversal. Stored
 `backlash_steps` is converted to output radians and reported as the expected
-offset range in `fusion_diag`, but is not added to the position unconditionally.
+offset range in `pos_get`, but is not added to the position unconditionally.
 
 When `SR_ENABLE_FUSION_OFFSET_FAULT` is enabled, firmware checks the absolute floating offset against
 `max(15 degrees, 1.5 * measured_backlash + 2 degrees)`. An excess must persist
@@ -390,7 +372,7 @@ Normal and calibration motion commands are rejected until a controller reset or
 `fail_ack=1`. The acknowledgement is accepted only with a healthy calibrated
 output encoder and TMC5160; it clears the latch and reanchors the motor-relative
 angle to the current absolute encoder through the session-only fusion offset.
-The check is enabled by default in `robot_config.h`; `fusion_diag` reports the
+The check is enabled by default in `robot_config.h`; `pos_get` reports the
 offset for analysis.
 
 The fused velocity is the filtered derivative of this final angle. If the
@@ -439,7 +421,7 @@ After calibrating the limits/table, place the joint at its geometric zero and
 invoke the trigger without a value:
 
 ```bash
-y r 26 zero_cal
+y r 26 zero_set
 ```
 
 This command is accepted only in calibration state `0` with a valid stored

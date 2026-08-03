@@ -95,7 +95,7 @@ public:
 
 DirectVelocityReader* direct_velocity_reader;
 NodeInfoReader* nireader;
-static constexpr size_t NUMBER_OF_REGISTERS = 30;
+static constexpr size_t NUMBER_OF_REGISTERS = 9;
 
 RegistersHandler<NUMBER_OF_REGISTERS>* registers_handler;
 
@@ -248,9 +248,72 @@ void pos_get_handler(
     RegisterAccessResponse::Type& response
 ) {
     HAL_GPIO_TogglePin(GPIOD, GPIO_PIN_2);
-    set_register_int32(v_out, motor_position_steps());
-    response.persistent = true;
-    response._mutable = true;
+    motor_fusion_diagnostics fusion{};
+    motor_limit_diagnostics limits{};
+    motor_fusion_get_diagnostics(&fusion);
+    motor_limit_get_diagnostics(&limits);
+    const float values[] = {
+        static_cast<float>(motor_encoder_raw()),
+        static_cast<float>(motor_position_steps()),
+        fusion.encoder_angle_rad,
+        fusion.tmc_angle_rad,
+        fusion.offset_rad,
+        fusion.fused_angle_rad,
+        motor_fused_velocity_manipulator(),
+        fusion.encoder_error_rad,
+        fusion.backlash_rad,
+        static_cast<float>(motor_control_mode_get()),
+        fusion.calibrated_encoder ? 1.0F : 0.0F,
+        limits.hard_lower_rad,
+        limits.soft_lower_rad,
+        limits.soft_upper_rad,
+        limits.hard_upper_rad,
+        limits.minimum_velocity_rad_s,
+        limits.maximum_velocity_rad_s,
+        static_cast<float>(motor_calibration_state()),
+        static_cast<float>(motor_calibration_progress()),
+    };
+    set_register_real32_array(v_out, values, std::size(values));
+    response.persistent = false;
+    response._mutable = false;
+}
+
+void errors_handler(
+    const uavcan_register_Value_1_0&,
+    uavcan_register_Value_1_0& v_out,
+    RegisterAccessResponse::Type& response)
+{
+    motor_encoder_diagnostics encoder{};
+    fault_log_record log{};
+    motor_encoder_get_diagnostics(&encoder);
+    motor_fault_log_last(&log);
+    const int32_t values[] = {
+        static_cast<int32_t>(motor_fault_active()),
+        static_cast<int32_t>(motor_fault_latched()),
+        motor_fail_level(),
+        motor_stop_reason(),
+        motor_network_state(),
+        motor_controller_state(),
+        motor_driver_state(),
+        motor_driver_error(),
+        static_cast<int32_t>(system_watchdog_reset_reason()),
+        encoder.last_read_ok ? 1 : 0,
+        encoder.last_hal_status,
+        static_cast<int32_t>(encoder.transfer_count),
+        static_cast<int32_t>(encoder.error_count),
+        static_cast<int32_t>(encoder.raw_frame),
+        encoder.has_valid_angle ? 1 : 0,
+        motor_calibration_state(),
+        motor_calibration_error(),
+        static_cast<int32_t>(log.sequence),
+        static_cast<int32_t>(log.uptime_ms),
+        static_cast<int32_t>(log.fault_mask),
+        static_cast<int32_t>(log.tmc_gstat),
+        static_cast<int32_t>(log.tmc_drv_status),
+    };
+    set_register_int32_array(v_out, values, std::size(values));
+    response.persistent = false;
+    response._mutable = false;
 }
 
 void enc_get_handler(
@@ -653,36 +716,15 @@ void setup_cyphal(FDCAN_HandleTypeDef* handler) {
 	direct_velocity_reader = new DirectVelocityReader(interface);
 	registers_handler = new RegistersHandler<NUMBER_OF_REGISTERS>(
         {
-            RegisterDefinition{"move", move_handler},
+            RegisterDefinition{"auto_cal", auto_calibration_handler},
             RegisterDefinition{"pos_set", pos_set_handler},
             RegisterDefinition{"pos_get", pos_get_handler},
-            RegisterDefinition{"enc_get", enc_get_handler},
-            RegisterDefinition{"enc_status", enc_status_handler},
-            RegisterDefinition{"arm", arm_handler},
-            RegisterDefinition{"tmc_state", tmc_state_handler},
-            RegisterDefinition{"tmc_error", tmc_error_handler},
-            RegisterDefinition{"fus_get", fus_get_handler},
-            RegisterDefinition{"fusion_diag", fusion_diag_handler},
-            RegisterDefinition{"servo_diag", servo_diag_handler},
-            RegisterDefinition{"limit_diag", limit_diag_handler},
-            RegisterDefinition{"reset_reason", reset_reason_handler},
             RegisterDefinition{"fail_ack", fail_ack_handler},
-            RegisterDefinition{"fault_active", fault_active_handler},
-            RegisterDefinition{"fault_latched", fault_latched_handler},
-            RegisterDefinition{"fault_level", fault_level_handler},
-            RegisterDefinition{"stop_reason", stop_reason_handler},
-            RegisterDefinition{"network_state", network_state_handler},
-            RegisterDefinition{"controller_state", controller_state_handler},
-            RegisterDefinition{"control_mode", control_mode_handler},
-            RegisterDefinition{"cal_cmd", calibration_command_handler},
-            RegisterDefinition{"auto_cal", auto_calibration_handler},
+            RegisterDefinition{"errors", errors_handler},
+            RegisterDefinition{"move", move_handler},
+            RegisterDefinition{"zero_set", zero_calibration_handler},
             RegisterDefinition{"luft_cal", backlash_calibration_handler},
-            RegisterDefinition{"zero_cal", zero_calibration_handler},
-            RegisterDefinition{"cal_next", calibration_next_handler},
-            RegisterDefinition{"cal_state", calibration_state_handler},
-            RegisterDefinition{"cal_result", calibration_result_handler},
-            RegisterDefinition{"fault_log_count", fault_log_count_handler},
-            RegisterDefinition{"fault_log_last", fault_log_last_handler},
+            RegisterDefinition{"arm", arm_handler},
         },
         interface
     );
