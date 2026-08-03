@@ -242,6 +242,9 @@ The node exposes the following read-only Cyphal registers:
   from `controller_node_id` in `robot_config.h` updates this state. Operational
   joint commands are accepted only from this node.
 - `control_mode`: `0` hold, `1` servo, `2` direct, `3` calibration.
+- `reset_reason`: reset-cause bit mask: bit 0 external/reset pin, bit 1
+  brownout, bit 2 software reset, bit 3 IWDG, bit 4 WWDG, bit 5 low-power
+  reset, and bit 6 option-byte reload. More than one bit may be set.
 - `cal_cmd`: write `1` to enter calibration (stop and disarm), or `2` to
   abort (stop and disarm).
 - `auto_cal`: reading this trigger register starts a fully automatic low-current
@@ -408,7 +411,7 @@ limit, table, or geometric-zero data; the next successful calibration write
 uses version 3.
 
 Only overtemperature shutdowns and short circuits are written to EEPROM.
-Network, communication and position-mismatch events remain session-local. The
+Network, communication and motor-slip events remain session-local. The
 AT24C64 fault log uses the final 2 KiB as a 64-record ring; the first 6 KiB are
 reserved for future calibration data.
 
@@ -421,3 +424,13 @@ Raw velocity commands must be refreshed at least once every 1 second (1000 ms). 
 firmware commands zero velocity and keeps the driver armed. Loss of controller
 heartbeat has the same stop/hold behavior; heartbeats from other nodes continue
 to indicate a live network but do not keep controller state online.
+
+The hardware IWDG starts after boot-time peripheral, Cyphal, motor, and EEPROM
+initialization. Its nominal timeout is 2 seconds. Firmware refreshes it only
+after a main-loop pass has completed both the scheduled `motor_update` and
+`cyphal_loop`; a stall in either path therefore resets the MCU. The watchdog is
+frozen while the CPU is halted by a debugger. After an IWDG reset the normal
+initialization leaves the joint in HOLD, and controller-originated movement
+still requires a valid controller heartbeat and a new command. Reset causes are
+session-only and available through `reset_reason`; they are not written to
+EEPROM.

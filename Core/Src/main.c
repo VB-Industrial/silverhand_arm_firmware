@@ -32,6 +32,7 @@
 #include "communications.h"
 #include "motor.h"
 #include "robot_config.h"
+#include "system_watchdog.h"
 #include "tmc5160.h"
 
 /* USER CODE END Includes */
@@ -82,7 +83,7 @@ int main(void)
   HAL_Init();
 
   /* USER CODE BEGIN Init */
-
+  system_watchdog_capture_reset_reason();
   /* USER CODE END Init */
 
   /* Configure the system clock */
@@ -107,6 +108,9 @@ int main(void)
   HAL_Delay(10);
   motor_init();
   HAL_Delay(10);
+  if (!system_watchdog_start()) {
+    Error_Handler();
+  }
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -119,6 +123,7 @@ int main(void)
   while (1)
   {
       uint32_t now = HAL_GetTick();
+      bool motor_cycle_completed = false;
       if ( (now - last_hbeat) >= 1000) {
           last_hbeat = now;
           heartbeat();
@@ -126,12 +131,16 @@ int main(void)
       if ( (now - last_motor_update) >= 20) {
           last_motor_update = now;
           motor_update(now);
+          motor_cycle_completed = true;
       }
       if ( (now - last_js) >= 50) {
           last_js = now;
           send_JS();
       }
       cyphal_loop();
+      if (motor_cycle_completed) {
+          system_watchdog_refresh();
+      }
   }
     /* USER CODE END WHILE */
 

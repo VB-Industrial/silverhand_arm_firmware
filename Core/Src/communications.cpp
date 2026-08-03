@@ -24,6 +24,7 @@
 extern "C" {
 #include "communications.h"
 #include "motor.h"
+#include "system_watchdog.h"
 #include "utility.h"
 
 TYPE_ALIAS(HBeat, uavcan_node_Heartbeat_1_0)
@@ -94,7 +95,7 @@ public:
 
 DirectVelocityReader* direct_velocity_reader;
 NodeInfoReader* nireader;
-static constexpr size_t NUMBER_OF_REGISTERS = 27;
+static constexpr size_t NUMBER_OF_REGISTERS = 28;
 
 RegistersHandler<NUMBER_OF_REGISTERS>* registers_handler;
 
@@ -284,6 +285,16 @@ void fusion_diag_handler(
         diagnostics.calibrated_encoder ? 1.0F : 0.0F,
     };
     set_register_real32_array(v_out, values, std::size(values));
+    response.persistent = false;
+    response._mutable = false;
+}
+
+void reset_reason_handler(
+    const uavcan_register_Value_1_0&,
+    uavcan_register_Value_1_0& v_out,
+    RegisterAccessResponse::Type& response)
+{
+    set_register_int32(v_out, static_cast<int32_t>(system_watchdog_reset_reason()));
     response.persistent = false;
     response._mutable = false;
 }
@@ -584,6 +595,7 @@ void setup_cyphal(FDCAN_HandleTypeDef* handler) {
             RegisterDefinition{"tmc_error", tmc_error_handler},
             RegisterDefinition{"fus_get", fus_get_handler},
             RegisterDefinition{"fusion_diag", fusion_diag_handler},
+            RegisterDefinition{"reset_reason", reset_reason_handler},
             RegisterDefinition{"fail_ack", fail_ack_handler},
             RegisterDefinition{"fault_active", fault_active_handler},
             RegisterDefinition{"fault_latched", fault_latched_handler},
