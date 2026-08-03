@@ -39,6 +39,7 @@ float g_startup_tmc_angle_offset_rad = 0.0F;
 bool g_output_encoder_available = false;
 bool g_output_encoder_degraded = false;
 bool g_encoder_last_read_ok = false;
+motor_control_mode g_control_mode = MOTOR_CONTROL_MODE_HOLD;
 
 FaultManager g_fault_manager;
 Tmc5160StateMachine g_tmc_driver;
@@ -166,11 +167,16 @@ void update_fusion_state(const uint32_t now_ms)
     g_prev_fusion_ts_ms = now_ms;
 }
 
-int32_t manipulator_radians_to_tmc_steps(const float manipulator_angle_rad)
+bool manipulator_radians_to_tmc_steps(
+    const float manipulator_angle_rad,
+    int32_t& target_position_steps)
 {
     const float native_target_angle_rad = manipulator_to_native_radians(manipulator_angle_rad);
     const float tmc_target_angle_rad = native_target_angle_rad - g_startup_tmc_angle_offset_rad;
-    return rad_to_steps(tmc_target_angle_rad, kRobotJointProfile->joint_full_steps);
+    return radians_to_steps_checked(
+        tmc_target_angle_rad,
+        static_cast<int32_t>(kRobotJointProfile->joint_full_steps),
+        &target_position_steps);
 }
 
 void update_encoder_status(const uint32_t now_ms)
@@ -212,6 +218,7 @@ void update_faults(const uint32_t now_ms)
 
     if (result.stop_motion) {
         tmc5160_move(0);
+        g_control_mode = MOTOR_CONTROL_MODE_HOLD;
     }
 }
 
@@ -234,6 +241,7 @@ extern "C" void motor_init(void)
 
     g_fault_manager.initialize(now_ms, kRobotJointProfile->joint_index);
     g_tmc_driver.initialize(static_cast<uint8_t>(kRobotJointProfile->init_irun));
+    g_control_mode = MOTOR_CONTROL_MODE_HOLD;
 
     g_zero_enc_runtime = kRobotJointProfile->default_zero_enc;
 
@@ -270,22 +278,41 @@ extern "C" void motor_update(const uint32_t now_ms)
     update_degraded_led(now_ms);
 }
 
-extern "C" void motor_command(
+extern "C" bool motor_command(
     const float position_rad,
     const float velocity_rad_s,
     const float acceleration_rad_s2)
 {
-    if (!g_fault_manager.remote_motion_allowed() || !g_tmc_driver.is_enabled()) {
-        return;
+    if (!std::isfinite(position_rad) ||
+        !std::isfinite(velocity_rad_s) ||
+        !std::isfinite(acceleration_rad_s2)) {
+        return false;
     }
-    g_fault_manager.note_velocity_command(HAL_GetTick(), false);
 
-    const int32_t target_position_steps = manipulator_radians_to_tmc_steps(position_rad);
+    if (!g_fault_manager.remote_motion_allowed() || !g_tmc_driver.is_enabled()) {
+        return false;
+    }
+
+    int32_t target_position_steps = 0;
+    if (!manipulator_radians_to_tmc_steps(position_rad, target_position_steps)) {
+        return false;
+    }
+
+    int32_t direct_velocity_steps = 0;
+    if ((acceleration_rad_s2 != 0.0F) &&
+        !radians_to_steps_checked(
+            acceleration_rad_s2,
+            static_cast<int32_t>(kRobotJointProfile->joint_full_steps),
+            &direct_velocity_steps)) {
+        return false;
+    }
+
+    g_fault_manager.note_velocity_command(HAL_GetTick(), false);
     const float position_error_rad =
         angular_abs_diff_radians(position_rad, motor_fused_angle_manipulator());
 
     if (acceleration_rad_s2 != 0.0F) {
-        tmc5160_move(rad_to_steps(acceleration_rad_s2, kRobotJointProfile->joint_full_steps));
+        tmc5160_move(direct_velocity_steps);
     } else if ((fabsf(velocity_rad_s) < kVelocityZeroThresholdRadS) && (velocity_rad_s != 0.0F)) {
         tmc5160_velocity(kFastPositionVelocitySteps);
         tmc5160_position(target_position_steps, kFastPositionVelocitySteps);
@@ -301,15 +328,41 @@ extern "C" void motor_command(
         tmc5160_velocity(kFastPositionVelocitySteps);
         tmc5160_position(target_position_steps, kFastPositionVelocitySteps);
     }
+    g_control_mode = MOTOR_CONTROL_MODE_SERVO;
+    return true;
 }
 
-extern "C" void motor_move(const int32_t velocity_command)
+extern "C" bool motor_move(const int32_t velocity_command)
 {
     if (!g_fault_manager.motion_allowed() || !g_tmc_driver.is_enabled()) {
-        return;
+        return false;
     }
     tmc5160_move(velocity_command);
     g_fault_manager.note_velocity_command(HAL_GetTick(), velocity_command != 0);
+    g_control_mode = (velocity_command == 0)
+        ? MOTOR_CONTROL_MODE_HOLD
+        : MOTOR_CONTROL_MODE_DIRECT;
+    return true;
+}
+
+extern "C" bool motor_move_radians_per_second(const float velocity_rad_s)
+{
+    if (!std::isfinite(velocity_rad_s) ||
+        !g_fault_manager.remote_motion_allowed() ||
+        !g_tmc_driver.is_enabled()) {
+        return false;
+    }
+
+    const float native_velocity_rad_s = manipulator_to_native_radians(velocity_rad_s);
+    int32_t velocity_steps = 0;
+    if (!radians_to_steps_checked(
+            native_velocity_rad_s,
+            static_cast<int32_t>(kRobotJointProfile->joint_full_steps),
+            &velocity_steps)) {
+        return false;
+    }
+
+    return motor_move(velocity_steps);
 }
 
 extern "C" void motor_set_position_steps(const int32_t target_position_steps)
@@ -320,6 +373,7 @@ extern "C" void motor_set_position_steps(const int32_t target_position_steps)
     g_fault_manager.note_velocity_command(HAL_GetTick(), false);
     tmc5160_apply_default_motion_profile();
     tmc5160_position(target_position_steps, kDefaultPositionVelocitySteps);
+    g_control_mode = MOTOR_CONTROL_MODE_SERVO;
 }
 
 extern "C" bool motor_arm(const bool armed)
@@ -328,10 +382,15 @@ extern "C" bool motor_arm(const bool armed)
         const bool enabled = g_tmc_driver.enable();
         if (enabled) {
             sync_tmc_offset_to_encoder();
+            g_control_mode = MOTOR_CONTROL_MODE_HOLD;
         }
         return enabled;
     }
-    return g_tmc_driver.disable();
+    const bool disabled = g_tmc_driver.disable();
+    if (disabled) {
+        g_control_mode = MOTOR_CONTROL_MODE_HOLD;
+    }
+    return disabled;
 }
 
 extern "C" bool motor_driver_enabled(void)
@@ -347,6 +406,11 @@ extern "C" int32_t motor_driver_state(void)
 extern "C" int32_t motor_driver_error(void)
 {
     return static_cast<int32_t>(g_tmc_driver.error());
+}
+
+extern "C" int32_t motor_control_mode_get(void)
+{
+    return static_cast<int32_t>(g_control_mode);
 }
 
 extern "C" void motor_note_heartbeat(const uint32_t now_ms, const uint8_t source_node_id)

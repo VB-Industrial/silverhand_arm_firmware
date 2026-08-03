@@ -7,6 +7,9 @@
 
 #include "utility.h"
 
+#include <limits.h>
+#include <stddef.h>
+
 
 //TODO make sure that is works for less than 24 bit values
 int32_t sign_extend_bits_to_32(int32_t x, uint8_t bits) {
@@ -19,7 +22,7 @@ int32_t sign_extend_bits_to_32(int32_t x, uint8_t bits) {
 	if(sign_bit) //if value < 0 therefore sign_bit == 1, fill first 8 bits with 1
 	{
 		int32_t res = 0;
-		int32_t mask = 0b11111111;
+		int32_t mask = 0xFF;
 		res |= x;
 		res |= (mask << (bits));
 		return res;
@@ -46,11 +49,21 @@ float steps_to_rads(int32_t steps, int32_t full_steps)
 	return rads;
 }
 
-int32_t rad_to_steps(float rads, int32_t full_steps)
+bool radians_to_steps_checked(const float radians, const int32_t full_steps, int32_t* const steps)
 {
-	int32_t steps = 0;
-	steps = (int32_t)((full_steps * rads)/(M_PI * 2));
-	return steps;
+	if ((steps == NULL) || (full_steps <= 0) || !isfinite(radians)) {
+		return false;
+	}
+
+	const float scaled_steps = ((float) full_steps * radians) / (2.0F * (float) M_PI);
+	if (!isfinite(scaled_steps) ||
+	    (scaled_steps < (float) INT32_MIN) ||
+	    (scaled_steps >= 2147483648.0F)) {
+		return false;
+	}
+
+	*steps = (int32_t) scaled_steps;
+	return true;
 }
 
 float wrap_angle_radians(float angle)

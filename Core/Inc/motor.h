@@ -19,16 +19,25 @@ typedef struct motor_encoder_diagnostics {
     bool has_valid_angle;
 } motor_encoder_diagnostics;
 
+typedef enum motor_control_mode {
+    MOTOR_CONTROL_MODE_HOLD = 0,
+    MOTOR_CONTROL_MODE_SERVO = 1,
+    MOTOR_CONTROL_MODE_DIRECT = 2,
+    MOTOR_CONTROL_MODE_CALIBRATION = 3,
+} motor_control_mode;
+
 void motor_init(void);
 void motor_update(uint32_t now_ms);
 
-void motor_command(float position_rad, float velocity_rad_s, float acceleration_rad_s2);
-void motor_move(int32_t velocity_command);
+bool motor_command(float position_rad, float velocity_rad_s, float acceleration_rad_s2);
+bool motor_move(int32_t velocity_command);
+bool motor_move_radians_per_second(float velocity_rad_s);
 void motor_set_position_steps(int32_t target_position_steps);
 bool motor_arm(bool armed);
 bool motor_driver_enabled(void);
 int32_t motor_driver_state(void);
 int32_t motor_driver_error(void);
+int32_t motor_control_mode_get(void);
 void motor_note_heartbeat(uint32_t now_ms, uint8_t source_node_id);
 
 int32_t motor_position_steps(void);

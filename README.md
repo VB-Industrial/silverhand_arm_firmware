@@ -222,6 +222,13 @@ All VS Code build and OpenOCD tasks run inside WSL and do not invoke `sudo`.
 
 ## Runtime diagnostics
 
+Cyphal command and feedback subjects are defined per joint in `robot_config.h`:
+
+- `1001`: shared `Planar.0.1` joint feedback; identify a joint by source node-ID.
+- `1121`–`1126`: per-joint `Planar.0.1` SERVO commands from the controller.
+- `1131`–`1136`: per-joint `angular_velocity.Scalar.1.0` DIRECT commands
+  in joint rad/s from the controller.
+
 The node exposes the following read-only Cyphal registers:
 
 - `fault_active` and `fault_latched`: current and session-latched fault masks.
@@ -234,6 +241,7 @@ The node exposes the following read-only Cyphal registers:
 - `controller_state`: `0` starting, `1` online, `2` offline. Only heartbeat
   from `controller_node_id` in `robot_config.h` updates this state. Operational
   joint commands are accepted only from this node.
+- `control_mode`: `0` hold, `1` servo, `2` direct, `3` calibration.
 - `enc_status`: `[last_read_ok, HAL_status, transfer_count, error_count,
   raw_16bit_frame, has_valid_angle]`. The working single-frame AS50xx exchange
   is intentionally unchanged; a failed transfer preserves the last valid angle.

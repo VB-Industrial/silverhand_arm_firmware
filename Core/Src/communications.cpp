@@ -13,6 +13,7 @@
 
 #include "uavcan/node/Heartbeat_1_0.h"
 #include "uavcan/primitive/scalar/Integer32_1_0.h"
+#include "uavcan/si/unit/angular_velocity/Scalar_1_0.h"
 #include "reg/udral/physics/kinematics/rotation/Planar_0_1.h"
 
 #include <uavcan/_register/Access_1_0.h>
@@ -27,6 +28,7 @@ extern "C" {
 
 TYPE_ALIAS(HBeat, uavcan_node_Heartbeat_1_0)
 TYPE_ALIAS(JS_msg, reg_udral_physics_kinematics_rotation_Planar_0_1)
+TYPE_ALIAS(DirectVelocityMsg, uavcan_si_unit_angular_velocity_Scalar_1_0)
 
 std::byte buffer[sizeof(CyphalInterface) + sizeof(G4CAN) + sizeof(SystemAllocator)];
 std::shared_ptr<CyphalInterface> interface;
@@ -55,8 +57,7 @@ HBeatReader* h_reader;
 class JSReader: public AbstractSubscription<JS_msg> {
 public:
 	JSReader(InterfacePtr interface): AbstractSubscription<JS_msg>(interface,
-        // Тут параметры - port_id, transfer kind или только port_id
-		kRobotJointProfile->js_sub_port_id
+		kRobotJointProfile->servo_command_port_id
     ) {};
     void handler(const reg_udral_physics_kinematics_rotation_Planar_0_1& js_in, CanardRxTransfer* transfer) override
     {
@@ -72,8 +73,28 @@ public:
 };
 
 JSReader* js_reader;
+class DirectVelocityReader: public AbstractSubscription<DirectVelocityMsg> {
+public:
+    DirectVelocityReader(InterfacePtr interface): AbstractSubscription<DirectVelocityMsg>(
+        interface,
+        kRobotJointProfile->direct_command_port_id
+    ) {};
+
+    void handler(
+        const uavcan_si_unit_angular_velocity_Scalar_1_0& command,
+        CanardRxTransfer* transfer) override
+    {
+        if ((transfer == nullptr) ||
+            (transfer->metadata.remote_node_id != kRobotJointProfile->controller_node_id)) {
+            return;
+        }
+        motor_move_radians_per_second(command.radian_per_second);
+    }
+};
+
+DirectVelocityReader* direct_velocity_reader;
 NodeInfoReader* nireader;
-static constexpr size_t NUMBER_OF_REGISTERS = 18;
+static constexpr size_t NUMBER_OF_REGISTERS = 19;
 
 RegistersHandler<NUMBER_OF_REGISTERS>* registers_handler;
 
@@ -342,6 +363,16 @@ void controller_state_handler(
     response._mutable = false;
 }
 
+void control_mode_handler(
+    const uavcan_register_Value_1_0&,
+    uavcan_register_Value_1_0& v_out,
+    RegisterAccessResponse::Type& response
+) {
+    set_register_int32(v_out, motor_control_mode_get());
+    response.persistent = false;
+    response._mutable = false;
+}
+
 void fault_log_count_handler(
     const uavcan_register_Value_1_0&,
     uavcan_register_Value_1_0& v_out,
@@ -381,7 +412,7 @@ void send_JS(void) {             //float* pos, float* vel, float* eff
 	};
     interface->send_msg<JS_msg>(
 		&js_msg,
-		kRobotJointProfile->agent_js_sub_port_id,
+		kRobotJointProfile->feedback_port_id,
 		&int_transfer_id
 	);
 }
@@ -418,6 +449,7 @@ void setup_cyphal(FDCAN_HandleTypeDef* handler) {
 	);
     h_reader = new HBeatReader(interface);
 	js_reader = new JSReader(interface);
+	direct_velocity_reader = new DirectVelocityReader(interface);
 	registers_handler = new RegistersHandler<NUMBER_OF_REGISTERS>(
         {
             RegisterDefinition{"move", move_handler},
@@ -436,6 +468,7 @@ void setup_cyphal(FDCAN_HandleTypeDef* handler) {
             RegisterDefinition{"stop_reason", stop_reason_handler},
             RegisterDefinition{"network_state", network_state_handler},
             RegisterDefinition{"controller_state", controller_state_handler},
+            RegisterDefinition{"control_mode", control_mode_handler},
             RegisterDefinition{"fault_log_count", fault_log_count_handler},
             RegisterDefinition{"fault_log_last", fault_log_last_handler},
         },
@@ -459,9 +492,11 @@ void cyphal_can_starter(FDCAN_HandleTypeDef* hfdcan)
 {
 
 	CanardFilter cyphal_filter_for_node_id = canardMakeFilterForServices(kRobotJointProfile->node_id);
-	CanardFilter cyphal_filter_for_JS = canardMakeFilterForSubject(kRobotJointProfile->js_sub_port_id);//robot_joint_state_sub_port_id() //1121
+	CanardFilter cyphal_filter_for_JS = canardMakeFilterForSubject(kRobotJointProfile->servo_command_port_id);
+	CanardFilter cyphal_filter_for_direct = canardMakeFilterForSubject(kRobotJointProfile->direct_command_port_id);
 	CanardFilter cyphal_filter_for_HB = canardMakeFilterForSubject(kRobotJointProfile->heartbeat_subject_id);//robot_joint_state_sub_port_id()
 	static FDCAN_FilterTypeDef sFilterConfig;
+	static FDCAN_FilterTypeDef directFilterConfig;
 	static FDCAN_FilterTypeDef hbFilterConfig;
 	static FDCAN_FilterTypeDef niFilterConfig;
 
@@ -479,8 +514,15 @@ void cyphal_can_starter(FDCAN_HandleTypeDef* hfdcan)
 	sFilterConfig.FilterID1 =  cyphal_filter_for_JS.extended_can_id;
 	sFilterConfig.FilterID2 =  cyphal_filter_for_JS.extended_mask;
 
+	directFilterConfig.IdType = FDCAN_EXTENDED_ID;
+	directFilterConfig.FilterIndex = 2;
+	directFilterConfig.FilterType = FDCAN_FILTER_MASK;
+	directFilterConfig.FilterConfig = FDCAN_FILTER_TO_RXFIFO0;
+	directFilterConfig.FilterID1 = cyphal_filter_for_direct.extended_can_id;
+	directFilterConfig.FilterID2 = cyphal_filter_for_direct.extended_mask;
+
 	hbFilterConfig.IdType = FDCAN_EXTENDED_ID;
-	hbFilterConfig.FilterIndex = 2;
+	hbFilterConfig.FilterIndex = 3;
 	hbFilterConfig.FilterType = FDCAN_FILTER_MASK;
 	hbFilterConfig.FilterConfig = FDCAN_FILTER_TO_RXFIFO0;
 	hbFilterConfig.FilterID1 =  cyphal_filter_for_HB.extended_can_id;
@@ -496,6 +538,9 @@ void cyphal_can_starter(FDCAN_HandleTypeDef* hfdcan)
 	  Error_Handler();
 	}
 	if (HAL_FDCAN_ConfigFilter(hfdcan, &sFilterConfig) != HAL_OK) {
+	  Error_Handler();
+	}
+	if (HAL_FDCAN_ConfigFilter(hfdcan, &directFilterConfig) != HAL_OK) {
 	  Error_Handler();
 	}
 	if (HAL_FDCAN_ConfigFilter(hfdcan, &hbFilterConfig) != HAL_OK) {
