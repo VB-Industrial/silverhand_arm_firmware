@@ -53,12 +53,9 @@ public:
     };
 
     void initialize(uint8_t joint_id, bool encoder_inverted, uint16_t raw);
-    bool begin(bool encoder_available, uint16_t raw);
     bool begin_auto(uint32_t now_ms, bool encoder_available, uint16_t raw);
     bool begin_backlash(uint32_t now_ms, bool encoder_available, uint16_t raw);
     bool calibrate_zero(uint16_t raw);
-    bool advance(uint32_t now_ms, bool encoder_available, uint16_t raw);
-    void abort();
     void fail(EncoderCalibrationError error);
     Action update(uint32_t now_ms, bool encoder_available, uint16_t raw, int32_t tmc_position_steps);
 
@@ -74,7 +71,6 @@ public:
         int32_t& soft_a_ticks,
         int32_t& soft_b_ticks,
         int32_t& hard_b_ticks) const;
-    int32_t manual_total_travel() const;
     bool zero_valid() const;
     uint16_t zero_raw() const;
 
@@ -114,7 +110,6 @@ private:
     uint16_t previous_raw_ = 0U;
     int32_t position_ticks_ = 0;
     int32_t previous_position_ticks_ = 0;
-    int32_t manual_total_travel_ = 0;
     int32_t safe_start_ticks_ = 0;
     int32_t safe_end_ticks_ = 0;
     uint32_t state_started_ms_ = 0U;

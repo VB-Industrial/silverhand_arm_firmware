@@ -34,7 +34,10 @@ bool Tmc5160StateMachine::enable()
     }
 
     // Never resume a velocity command that existed before disable/reset.
-    tmc5160_move(0);
+    if (!tmc5160_stop(kDisableDecelerationTimeoutMs)) {
+        enter_fault(Tmc5160Error::CriticalDriverStatus);
+        return false;
+    }
     tmc5160_clear_gstat(kGstatClearMask);
     tmc5160_arm();
     HAL_Delay(kEnableStabilizationDelayMs);
@@ -74,11 +77,9 @@ bool Tmc5160StateMachine::disable()
     }
 
     // Debug/service disable: stop first, then remove phase current.
-    tmc5160_move(0);
-    const uint32_t start_ms = HAL_GetTick();
-    while ((tmc5160_velocity_read() != 0) &&
-           ((HAL_GetTick() - start_ms) < kDisableDecelerationTimeoutMs)) {
-        HAL_Delay(1U);
+    if (!tmc5160_stop(kDisableDecelerationTimeoutMs)) {
+        enter_fault(Tmc5160Error::CriticalDriverStatus);
+        return false;
     }
 
     tmc5160_disarm();

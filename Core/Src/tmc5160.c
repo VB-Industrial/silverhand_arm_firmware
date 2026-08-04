@@ -73,13 +73,6 @@
 static uint32_t g_gconf_shadow = 0U;
 
 
-#if (USE_FREERTOS == 1)
-#include "cmsis_os.h"
-#define tmc5160_delay(x)   osDelay(x)
-#else
-#define tmc5160_delay(x)   HAL_Delay(x)
-#endif
-
 static void tmc5160_write_reg32(const uint8_t reg_addr, const uint32_t value)
 {
 	uint8_t WData[5] = {0};
@@ -99,11 +92,6 @@ static void tmc5160_configure_pins_for_spi_mode(void)
 	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_SET);   // CS HIGH
 	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_9, GPIO_PIN_RESET); // DIR
 	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8, GPIO_PIN_RESET); // STEP
-}
-
-static void tmc5160_prepare_driver_after_strap(void)
-{
-	HAL_Delay(10);
 }
 
 static void tmc5160_set_rampmode_position(void)
@@ -189,11 +177,6 @@ static uint32_t tmc5160_velocity_register_value(const int32_t velocity_steps_per
 		: (uint32_t)scaled;
 }
 
-static void tmc5160_set_chopconf_spreadcycle_default(void)
-{
-	tmc5160_write_reg32(TMC5160_REG_CHOPCONF, 0x000000C3U);
-}
-
 static void tmc5160_set_current_levels(const uint8_t ihold, const uint8_t irun, const uint8_t ihold_delay)
 {
 	uint32_t value = 0U;
@@ -201,21 +184,6 @@ static void tmc5160_set_current_levels(const uint8_t ihold, const uint8_t irun, 
 	value |= ((uint32_t) irun) << 8;
 	value |= (uint32_t) ihold;
 	tmc5160_write_reg32(TMC5160_REG_IHOLD_IRUN, value);
-}
-
-static void tmc5160_set_tpowerdown(const uint8_t delay)
-{
-	tmc5160_write_reg32(TMC5160_REG_TPOWERDOWN, (uint32_t) delay);
-}
-
-static void tmc5160_set_pwmconf(const uint32_t value)
-{
-	tmc5160_write_reg32(TMC5160_REG_PWMCONF, value);
-}
-
-static void tmc5160_reset_gconf_shadow(void)
-{
-	g_gconf_shadow = 0U;
 }
 
 static void tmc5160_set_gconf_flag(const uint32_t mask, const bool enabled)
@@ -226,16 +194,6 @@ static void tmc5160_set_gconf_flag(const uint32_t mask, const bool enabled)
 		g_gconf_shadow &= ~mask;
 	}
 	tmc5160_write_reg32(TMC5160_REG_GCONF, g_gconf_shadow);
-}
-
-static void tmc5160_enable_stealthchop_default(void)
-{
-	tmc5160_set_gconf_flag(TMC5160_GCONF_EN_PWM_MODE_MASK, true);
-}
-
-static void tmc5160_set_tpwm_thrs(const uint32_t value)
-{
-	tmc5160_write_reg32(TMC5160_REG_TPWM_THRS, value);
 }
 
 void tmc5160_position(int32_t position, int32_t velocity)
@@ -465,16 +423,16 @@ bool tmc5160_health_check(tmc5160_health_snapshot* snapshot)
 void tmc5160_init(int8_t init_irun)
 {
 	tmc5160_configure_pins_for_spi_mode();
-	tmc5160_prepare_driver_after_strap();
-	tmc5160_reset_gconf_shadow();
+	HAL_Delay(10U);
+	g_gconf_shadow = 0U;
 
-	tmc5160_set_chopconf_spreadcycle_default();
+	tmc5160_write_reg32(TMC5160_REG_CHOPCONF, 0x000000C3U);
 	tmc5160_set_current_levels((uint8_t) init_irun, (uint8_t) init_irun, 0U);
-	tmc5160_set_tpowerdown(0x0AU);
+	tmc5160_write_reg32(TMC5160_REG_TPOWERDOWN, 0x0000000AU);
 	// PWM_FREQ=2: about 23.4 kHz with the TMC5160 internal 12 MHz clock.
-	tmc5160_set_pwmconf(0xC40E001EU);
-	tmc5160_enable_stealthchop_default();
-	tmc5160_set_tpwm_thrs(0x000000C8U);
+	tmc5160_write_reg32(TMC5160_REG_PWMCONF, 0xC40E001EU);
+	tmc5160_set_gconf_flag(TMC5160_GCONF_EN_PWM_MODE_MASK, true);
+	tmc5160_write_reg32(TMC5160_REG_TPWM_THRS, 0x000000C8U);
 
 	tmc5160_set_zero();
 
@@ -509,15 +467,18 @@ void tmc5160_arm()
 	HAL_GPIO_WritePin(GPIOC, GPIO_PIN_5, GPIO_PIN_RESET); //DRV SLEEP 0 for power on, 1 for power off
 }
 
-void tmc5160_stop()
+bool tmc5160_stop(const uint32_t timeout_ms)
 {
-	uint32_t pos = 0;
-
-	tmc5160_set_vstart(0U);
-	tmc5160_set_vmax(0U);
-
-	pos = tmc5160_position_read();
-	tmc5160_position((int32_t) pos, 0);
+	tmc5160_move(0);
+	const uint32_t started_ms = HAL_GetTick();
+	while (tmc5160_velocity_read() != 0) {
+		if ((HAL_GetTick() - started_ms) >= timeout_ms) {
+			return false;
+		}
+		HAL_Delay(1U);
+	}
+	tmc5160_set_rampmode_hold();
+	return true;
 }
 
 

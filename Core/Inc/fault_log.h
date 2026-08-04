@@ -26,7 +26,6 @@ void fault_log_init(uint8_t joint_id);
 bool fault_log_append(uint32_t uptime_ms, uint32_t fault_mask, uint32_t tmc_gstat, uint32_t tmc_drv_status);
 
 bool fault_log_available(void);
-uint32_t fault_log_count(void);
 bool fault_log_get_last(fault_log_record* record);
 
 #ifdef __cplusplus

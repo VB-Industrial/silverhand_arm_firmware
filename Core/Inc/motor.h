@@ -84,15 +84,12 @@ bool motor_fusion_get_diagnostics(motor_fusion_diagnostics* diagnostics);
 bool motor_servo_get_diagnostics(motor_servo_diagnostics* diagnostics);
 bool motor_limit_get_diagnostics(motor_limit_diagnostics* diagnostics);
 
-bool motor_calibration_command(int32_t command);
 bool motor_auto_calibration_start(void);
 bool motor_backlash_calibration_start(void);
 bool motor_zero_calibrate(void);
-bool motor_calibration_next(void);
 int32_t motor_calibration_state(void);
 int32_t motor_calibration_error(void);
 int32_t motor_calibration_progress(void);
-void motor_calibration_result(int32_t* values, uint8_t capacity, uint8_t* count);
 
 float motor_fused_angle_manipulator(void);
 float motor_fused_velocity_manipulator(void);
@@ -104,7 +101,6 @@ uint32_t motor_fault_latched(void);
 int32_t motor_network_state(void);
 int32_t motor_controller_state(void);
 int32_t motor_stop_reason(void);
-uint32_t motor_fault_log_count(void);
 bool motor_fault_log_last(fault_log_record* record);
 
 #ifdef __cplusplus

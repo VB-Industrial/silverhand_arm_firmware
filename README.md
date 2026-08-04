@@ -456,7 +456,9 @@ state online.
 ## Joint travel limits
 
 With valid stored encoder calibration and geometric zero, normal SERVO and
-DIRECT control use the manually recorded endpoints as hard limits. The stored
+DIRECT control use the calibrated endpoints as hard limits. Without a complete
+EEPROM calibration, all normal motion commands are rejected and the reported
+velocity bounds are `0...0`; only calibration may move the motor. The stored
 calibration safety margin defines an inner soft boundary at each end. Outward
 DIRECT velocity is linearly reduced from its `0.12 rad/s` cap at the soft
 boundary to zero at the hard limit. SERVO uses the same envelope with its own
@@ -470,7 +472,7 @@ at least the conservative braking distance `v^2/(2*a) + v*t_reaction`, using
 `a = 1 rad/s^2` and `t_reaction = 20 ms`. A quarter of the calibrated travel is
 the maximum expansion on very narrow joints.
 
-Position targets are saturated to the hard range. Velocity limiting is
+Position targets outside the stored hard range are rejected. Velocity limiting is
 recomputed from the fused output position on every motor update, including
 between received DIRECT commands, so a silent sender cannot continue driving
 through a limit before the one-second command watchdog expires. Calibration

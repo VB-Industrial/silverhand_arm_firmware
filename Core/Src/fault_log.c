@@ -147,11 +147,6 @@ bool fault_log_available(void)
     return log_available;
 }
 
-uint32_t fault_log_count(void)
-{
-    return has_last_record ? last_record.sequence : 0U;
-}
-
 bool fault_log_get_last(fault_log_record* record)
 {
     if (!has_last_record || (record == NULL)) {

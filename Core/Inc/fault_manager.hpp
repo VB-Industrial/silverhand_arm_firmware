@@ -77,7 +77,6 @@ public:
     NetworkState controller_state() const;
     StopReason stop_reason() const;
 
-    uint32_t log_count() const;
     bool last_log_record(fault_log_record& record) const;
 
 private:

@@ -182,11 +182,6 @@ StopReason FaultManager::stop_reason() const
     return stop_reason_;
 }
 
-uint32_t FaultManager::log_count() const
-{
-    return fault_log_count();
-}
-
 bool FaultManager::last_log_record(fault_log_record& record) const
 {
     return fault_log_get_last(&record);

@@ -132,7 +132,7 @@ void tmc5160_arm();
 
 void tmc5160_disarm();
 
-void tmc5160_stop();
+bool tmc5160_stop(uint32_t timeout_ms);
 
 void tmc5160_write(uint8_t* data);
 

@@ -8,7 +8,6 @@ namespace {
 constexpr int32_t kEncoderTicksPerTurn = 16384;
 constexpr int32_t kHalfTurnTicks = kEncoderTicksPerTurn / 2;
 constexpr int32_t kMaximumSpanTicks = 2 * kEncoderTicksPerTurn;
-constexpr int32_t kMaximumManualTravelTicks = 4 * kEncoderTicksPerTurn;
 constexpr int32_t kMinimumSpanTicks = 32;
 constexpr int32_t kMaximumCorrectionTicks = 2048;
 constexpr int32_t kHardLimitToleranceTicks = 16;
@@ -20,20 +19,6 @@ void EncoderCalibration::initialize(const uint8_t joint_id, const bool encoder_i
     encoder_inverted_ = encoder_inverted;
     previous_raw_ = raw;
     has_stored_data_ = encoder_calibration_storage_load(joint_id_, &data_);
-}
-
-bool EncoderCalibration::begin(const bool encoder_available, const uint16_t raw)
-{
-    if (!encoder_available || blocks_normal_control()) {
-        return false;
-    }
-    previous_raw_ = raw;
-    position_ticks_ = 0;
-    previous_position_ticks_ = 0;
-    manual_total_travel_ = 0;
-    error_ = EncoderCalibrationError::None;
-    state_ = EncoderCalibrationState::WaitLimitA;
-    return true;
 }
 
 bool EncoderCalibration::begin_auto(const uint32_t now_ms, const bool encoder_available, const uint16_t raw)
@@ -49,7 +34,6 @@ bool EncoderCalibration::begin_auto(const uint32_t now_ms, const bool encoder_av
     previous_raw_ = raw;
     position_ticks_ = 0;
     previous_position_ticks_ = 0;
-    manual_total_travel_ = 0;
     error_ = EncoderCalibrationError::None;
     state_started_ms_ = now_ms;
     stall_anchor_ms_ = now_ms;
@@ -76,7 +60,6 @@ bool EncoderCalibration::begin_backlash(
     previous_raw_ = raw;
     position_ticks_ = current_position_ticks;
     previous_position_ticks_ = current_position_ticks;
-    manual_total_travel_ = 0;
     error_ = EncoderCalibrationError::None;
     state_started_ms_ = now_ms;
     state_ = EncoderCalibrationState::MoveToRockStart;
@@ -97,65 +80,6 @@ bool EncoderCalibration::calibrate_zero(const uint16_t raw)
     data_ = updated;
     has_stored_data_ = true;
     return true;
-}
-
-bool EncoderCalibration::advance(const uint32_t now_ms, const bool encoder_available, const uint16_t raw)
-{
-    if (!encoder_available) {
-        fail(EncoderCalibrationError::EncoderUnavailable);
-        return false;
-    }
-    observe_raw(raw);
-    switch (state_) {
-    case EncoderCalibrationState::WaitLimitA: {
-        const uint16_t saved_zero_raw = data_.zero_raw;
-        const uint8_t saved_zero_valid = data_.zero_valid;
-        data_ = {};
-        data_.zero_raw = saved_zero_raw;
-        data_.zero_valid = saved_zero_valid;
-        data_.limit_a_raw = raw;
-        position_ticks_ = 0;
-        previous_position_ticks_ = 0;
-        manual_total_travel_ = 0;
-        previous_raw_ = raw;
-        state_ = EncoderCalibrationState::WaitLimitB;
-        return true;
-    }
-    case EncoderCalibrationState::WaitLimitB: {
-        const int32_t span = position_ticks_;
-        data_.limit_b_raw = raw;
-        data_.manual_span_ticks = span;
-        if ((std::abs(span) < kMinimumSpanTicks) ||
-            (std::abs(span) >= kMaximumSpanTicks) ||
-            (manual_total_travel_ >= kMaximumManualTravelTicks)) {
-            fail(EncoderCalibrationError::InvalidManualSpan);
-            return false;
-        }
-        const int32_t span_abs = (span < 0) ? -span : span;
-        const int32_t margin = std::clamp<int32_t>(span_abs / 50, 16, 200);
-        data_.safe_margin_ticks = static_cast<uint16_t>(margin);
-        const int32_t direction = (span > 0) ? 1 : -1;
-        safe_start_ticks_ = direction * margin;
-        safe_end_ticks_ = span - (direction * margin);
-        const int32_t safe_span = std::abs(safe_end_ticks_ - safe_start_ticks_);
-        data_.point_count = static_cast<uint16_t>(std::min<int32_t>(ENCODER_CALIBRATION_MAX_POINTS, safe_span + 1));
-        state_ = EncoderCalibrationState::Ready;
-        return true;
-    }
-    case EncoderCalibrationState::Ready:
-        state_started_ms_ = now_ms;
-        state_ = EncoderCalibrationState::MoveToA;
-        return true;
-    default:
-        return false;
-    }
-}
-
-void EncoderCalibration::abort()
-{
-    if (state_ != EncoderCalibrationState::Idle) {
-        state_ = EncoderCalibrationState::Aborted;
-    }
 }
 
 void EncoderCalibration::fail(const EncoderCalibrationError error)
@@ -440,9 +364,6 @@ int32_t EncoderCalibration::observe_raw(const uint16_t raw)
     }
     previous_raw_ = raw;
     position_ticks_ += delta;
-    if (state_ == EncoderCalibrationState::WaitLimitB) {
-        manual_total_travel_ += std::abs(delta);
-    }
     return delta;
 }
 
@@ -694,7 +615,6 @@ bool EncoderCalibration::prepare_automatic_span(const uint16_t raw)
     const int32_t span_abs = (span < 0) ? -span : span;
     data_.limit_b_raw = raw;
     data_.manual_span_ticks = span;
-    manual_total_travel_ = span_abs;
     if ((span_abs < kMinimumSpanTicks) || (span_abs >= kMaximumSpanTicks)) {
         return false;
     }
@@ -784,6 +704,5 @@ bool EncoderCalibration::calibrated_limit_ticks(
     hard_b_ticks = corrected_position_ticks(data_.manual_span_ticks) - corrected_zero;
     return true;
 }
-int32_t EncoderCalibration::manual_total_travel() const { return manual_total_travel_; }
 bool EncoderCalibration::zero_valid() const { return data_.zero_valid != 0U; }
 uint16_t EncoderCalibration::zero_raw() const { return data_.zero_raw; }
