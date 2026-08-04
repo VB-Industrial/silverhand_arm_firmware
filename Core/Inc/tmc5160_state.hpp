@@ -39,7 +39,7 @@ public:
     const tmc5160_fault_snapshot& fault_snapshot() const;
 
 private:
-    bool configure_while_disabled();
+    bool configure_and_enable();
     bool refresh_health_snapshot();
     void enter_fault(Tmc5160Error error);
 
@@ -47,6 +47,7 @@ private:
     Tmc5160Error error_ = Tmc5160Error::None;
     uint8_t initial_current_ = 0U;
     uint32_t last_status_update_ms_ = 0U;
+    uint32_t last_enable_attempt_ms_ = 0U;
     tmc5160_fault_snapshot fault_snapshot_{};
     bool driver_enabled_readback_ = false;
 };

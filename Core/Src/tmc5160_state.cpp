@@ -5,9 +5,9 @@
 namespace
 {
 constexpr uint32_t kGstatClearMask = 0x7UL;
-constexpr uint32_t kEnableStabilizationDelayMs = 100U;
 constexpr uint32_t kDisableDecelerationTimeoutMs = 250U;
 constexpr uint32_t kStatusUpdatePeriodMs = 100U;
+constexpr uint32_t kEnableRetryPeriodMs = 500U;
 }  // namespace
 
 bool Tmc5160StateMachine::initialize(const uint8_t initial_current)
@@ -27,20 +27,14 @@ bool Tmc5160StateMachine::enable()
     }
 
     state_ = Tmc5160State::Enabling;
+    last_enable_attempt_ms_ = HAL_GetTick();
     fault_snapshot_ = {};
-    if (!configure_while_disabled()) {
+    if (!configure_and_enable()) {
         enter_fault(error_);
         return false;
     }
 
-    // Never resume a velocity command that existed before disable/reset.
-    if (!tmc5160_stop(kDisableDecelerationTimeoutMs)) {
-        enter_fault(Tmc5160Error::CriticalDriverStatus);
-        return false;
-    }
     tmc5160_clear_gstat(kGstatClearMask);
-    tmc5160_arm();
-    HAL_Delay(kEnableStabilizationDelayMs);
 
     if (!refresh_health_snapshot()) {
         enter_fault(Tmc5160Error::Communication);
@@ -106,6 +100,12 @@ bool Tmc5160StateMachine::is_enabled() const
 
 void Tmc5160StateMachine::update(const uint32_t now_ms)
 {
+    if (state_ == Tmc5160State::Fault) {
+        if ((now_ms - last_enable_attempt_ms_) >= kEnableRetryPeriodMs) {
+            enable();
+        }
+        return;
+    }
     if ((state_ != Tmc5160State::Enabled) ||
         ((now_ms - last_status_update_ms_) < kStatusUpdatePeriodMs)) {
         return;
@@ -136,17 +136,20 @@ const tmc5160_fault_snapshot& Tmc5160StateMachine::fault_snapshot() const
     return fault_snapshot_;
 }
 
-bool Tmc5160StateMachine::configure_while_disabled()
+bool Tmc5160StateMachine::configure_and_enable()
 {
-    tmc5160_init(static_cast<int8_t>(initial_current_));
+    if (!tmc5160_init(static_cast<int8_t>(initial_current_))) {
+        error_ = Tmc5160Error::Communication;
+        return false;
+    }
 
     bool enabled = false;
     if (!tmc5160_read_driver_enabled(&enabled)) {
         error_ = Tmc5160Error::Communication;
         return false;
     }
-    if (enabled) {
-        error_ = Tmc5160Error::DisabledPinReadback;
+    if (!enabled) {
+        error_ = Tmc5160Error::EnabledPinReadback;
         return false;
     }
     if (!tmc5160_configuration_matches()) {

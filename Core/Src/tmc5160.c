@@ -69,6 +69,13 @@
 #define TMC5160_GCONF_READBACK_MASK     0x0003FFFFUL
 #define TMC5160_VELOCITY_TIME_SCALE     1.3981013F
 #define TMC5160_VELOCITY_REGISTER_MAX   0x007FFFFFUL
+#define TMC5160_STRAP_SETTLE_DELAY_MS   10U
+#define TMC5160_POWER_SETTLE_DELAY_MS   100U
+#define TMC5160_ENABLE_SETTLE_DELAY_MS  100U
+#define TMC5160_READY_TIMEOUT_MS        250U
+#define TMC5160_READY_RECHECK_TIMEOUT_MS 50U
+#define TMC5160_READY_POLL_MS           10U
+#define TMC5160_READY_STABLE_READS      3U
 
 static uint32_t g_gconf_shadow = 0U;
 
@@ -364,6 +371,25 @@ static bool tmc5160_read_ioin(uint32_t* ioin)
 	return (*ioin & 0xFF000000U) == 0x30000000U;
 }
 
+static bool tmc5160_wait_for_stable_communication(const uint32_t timeout_ms)
+{
+	const uint32_t started_ms = HAL_GetTick();
+	uint8_t valid_read_count = 0U;
+	do {
+		uint32_t ioin = 0U;
+		if (tmc5160_read_ioin(&ioin)) {
+			valid_read_count++;
+			if (valid_read_count >= TMC5160_READY_STABLE_READS) {
+				return true;
+			}
+		} else {
+			valid_read_count = 0U;
+		}
+		HAL_Delay(TMC5160_READY_POLL_MS);
+	} while ((HAL_GetTick() - started_ms) < timeout_ms);
+	return false;
+}
+
 bool tmc5160_read_driver_enabled(bool* enabled)
 {
 	uint32_t ioin = 0U;
@@ -380,7 +406,7 @@ bool tmc5160_configuration_matches(void)
 	return (((uint32_t)tmc5160_read_reg(TMC5160_REG_GCONF) & TMC5160_GCONF_READBACK_MASK) ==
 	        (g_gconf_shadow & TMC5160_GCONF_READBACK_MASK)) &&
 	       ((uint32_t)tmc5160_read_reg(TMC5160_REG_CHOPCONF) == 0x000000C3U) &&
-	       (((uint32_t)tmc5160_read_reg(TMC5160_REG_RAMPMODE) & 0x3U) == 0U);
+	       (((uint32_t)tmc5160_read_reg(TMC5160_REG_RAMPMODE) & 0x3U) == 3U);
 }
 
 bool tmc5160_health_check(tmc5160_health_snapshot* snapshot)
@@ -420,10 +446,27 @@ bool tmc5160_health_check(tmc5160_health_snapshot* snapshot)
 	return true;
 }
 
-void tmc5160_init(int8_t init_irun)
+bool tmc5160_init(int8_t init_irun)
 {
+	// Preserve the proven cold-start sequence.  With DRV_ENN high, establish
+	// the interface straps first.  Then enable the power stage while CHOPCONF
+	// still has its reset value (TOFF=0), so the bridges remain inactive until
+	// their current and chopper configuration is written below.
 	tmc5160_configure_pins_for_spi_mode();
-	HAL_Delay(10U);
+	HAL_Delay(TMC5160_STRAP_SETTLE_DELAY_MS);
+	// The MCU may be powered from ST-Link before the motor supply exists, or it
+	// may boot while that supply is still ramping.  Never lower DRV_ENN until
+	// the TMC logic answers consistently and remains alive through a settling
+	// interval.
+	if (!tmc5160_wait_for_stable_communication(TMC5160_READY_TIMEOUT_MS)) {
+		return false;
+	}
+	HAL_Delay(TMC5160_POWER_SETTLE_DELAY_MS);
+	if (!tmc5160_wait_for_stable_communication(TMC5160_READY_RECHECK_TIMEOUT_MS)) {
+		return false;
+	}
+	tmc5160_arm();
+	HAL_Delay(TMC5160_ENABLE_SETTLE_DELAY_MS);
 	g_gconf_shadow = 0U;
 
 	tmc5160_write_reg32(TMC5160_REG_CHOPCONF, 0x000000C3U);
@@ -434,15 +477,15 @@ void tmc5160_init(int8_t init_irun)
 	tmc5160_set_gconf_flag(TMC5160_GCONF_EN_PWM_MODE_MASK, true);
 	tmc5160_write_reg32(TMC5160_REG_TPWM_THRS, 0x000000C8U);
 
-	tmc5160_set_zero();
-
 	tmc5160_set_xactual(0);
 	tmc5160_set_xtarget(0);
-	tmc5160_set_rampmode_position();
-
 	tmc5160_apply_default_motion_profile();
+	// Never leave initialization in a motion mode.  Subsequent commands select
+	// position or velocity mode explicitly.
+	tmc5160_set_rampmode_hold();
 
-	HAL_Delay(10);
+	HAL_Delay(TMC5160_STRAP_SETTLE_DELAY_MS);
+	return true;
 }
 
 

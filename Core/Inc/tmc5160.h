@@ -85,7 +85,7 @@ typedef struct tmc5160_health_snapshot {
  *
  *
  */
-void tmc5160_init(int8_t init_irun);
+bool tmc5160_init(int8_t init_irun);
 
 /*Position in ticks
  *
