@@ -95,7 +95,7 @@ public:
 
 DirectVelocityReader* direct_velocity_reader;
 NodeInfoReader* nireader;
-static constexpr size_t NUMBER_OF_REGISTERS = 9;
+static constexpr size_t NUMBER_OF_REGISTERS = 11;
 
 RegistersHandler<NUMBER_OF_REGISTERS>* registers_handler;
 
@@ -356,6 +356,53 @@ void auto_calibration_handler(
     response._mutable = false;
 }
 
+void manual_calibration_handler(
+    const uavcan_register_Value_1_0& v_in,
+    uavcan_register_Value_1_0& v_out,
+    RegisterAccessResponse::Type& response)
+{
+    int32_t command = 0;
+    int32_t result = 0;
+    if (try_get_register_int32(v_in, command)) {
+        if ((command >= 1) && (command <= 5) &&
+            motor_manual_calibration_command(command)) {
+            result = command + 1;
+        }
+    }
+    set_register_int32(v_out, result);
+    response.persistent = false;
+    response._mutable = true;
+}
+
+void calibration_move_handler(
+    const uavcan_register_Value_1_0& v_in,
+    uavcan_register_Value_1_0& v_out,
+    RegisterAccessResponse::Type& response)
+{
+    int32_t velocity_command = 0;
+    int32_t result = 0;
+    if (try_get_register_int32(v_in, velocity_command) &&
+        motor_move_calibration(velocity_command)) {
+        result = velocity_command;
+    }
+    set_register_int32(v_out, result);
+    response.persistent = false;
+    response._mutable = true;
+}
+
+void calibration_data_handler(
+    const uavcan_register_Value_1_0&,
+    uavcan_register_Value_1_0& v_out,
+    RegisterAccessResponse::Type& response)
+{
+    int32_t values[8]{};
+    uint8_t count = 0U;
+    motor_calibration_data(values, static_cast<uint8_t>(std::size(values)), &count);
+    set_register_int32_array(v_out, values, count);
+    response.persistent = false;
+    response._mutable = false;
+}
+
 void zero_calibration_handler(
     const uavcan_register_Value_1_0&,
     uavcan_register_Value_1_0& v_out,
@@ -427,7 +474,9 @@ void setup_cyphal(FDCAN_HandleTypeDef* handler) {
 	direct_velocity_reader = new DirectVelocityReader(interface);
 	registers_handler = new RegistersHandler<NUMBER_OF_REGISTERS>(
         {
-            RegisterDefinition{"auto_cal", auto_calibration_handler},
+            RegisterDefinition{"man_cal", manual_calibration_handler},
+            RegisterDefinition{"move_cal", calibration_move_handler},
+            RegisterDefinition{"cal_data", calibration_data_handler},
             RegisterDefinition{"pos_set", pos_set_handler},
             RegisterDefinition{"pos_get", pos_get_handler},
             RegisterDefinition{"fail_ack", fail_ack_handler},

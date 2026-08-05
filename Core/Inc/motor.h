@@ -67,6 +67,7 @@ void motor_update(uint32_t now_ms);
 
 bool motor_command(float position_rad, float velocity_rad_s, float acceleration_rad_s2);
 bool motor_move(int32_t velocity_command);
+bool motor_move_calibration(int32_t velocity_command);
 bool motor_move_radians_per_second(float velocity_rad_s);
 bool motor_set_position_radians(float target_position_rad);
 bool motor_arm(bool armed);
@@ -85,11 +86,13 @@ bool motor_servo_get_diagnostics(motor_servo_diagnostics* diagnostics);
 bool motor_limit_get_diagnostics(motor_limit_diagnostics* diagnostics);
 
 bool motor_auto_calibration_start(void);
+bool motor_manual_calibration_command(int32_t command);
 bool motor_backlash_calibration_start(void);
 bool motor_zero_calibrate(void);
 int32_t motor_calibration_state(void);
 int32_t motor_calibration_error(void);
 int32_t motor_calibration_progress(void);
+void motor_calibration_data(int32_t* values, uint8_t capacity, uint8_t* count);
 
 float motor_fused_angle_manipulator(void);
 float motor_fused_velocity_manipulator(void);

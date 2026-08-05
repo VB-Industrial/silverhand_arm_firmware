@@ -323,34 +323,67 @@ therefore does not raise the DIRECT velocity-command-timeout fault.
 
 Calibration builds and stores the data used by the runtime joint-angle
 estimator: the encoder correction table, measured TMC/output scale, effective
-backlash, physical limits, and geometric zero.
+backlash, physical limits, and geometric zero. Calibration is performed with
+the five-step `man_cal` command; replace node ID `21` below as appropriate.
 
-1. Write `cal_cmd=1`. Firmware stops and disarms the driver.
-2. Move the joint by hand to either mechanical limit and write `cal_next=1`.
-3. Move it by hand through the usable path to the opposite limit and write
-   `cal_next=1`. Firmware tracks the signed, unwrapped encoder path, including
-   crossings through `0/16383` and a mechanical range of up to two encoder
-   revolutions.
-4. Remove hands and fixtures, then write `cal_next=1` again. Firmware arms at
-   limited current, moves back inside limit A, settles, and performs
-   constant-speed measurement passes from A to B and back to A.
-5. A table of up to 256 uniformly spaced `int16` correction points is checked
-   for monotonicity. The mean of the normalized forward/reverse tables captures
-   encoder nonlinearity.
-6. Firmware moves to the middle of the range and performs four low-current
-   rocking cycles between `middle - 15 degrees` and `middle + 15 degrees`.
-   For a narrow joint, each side is limited to one quarter of the calibrated
-   span. Each half-cycle subtracts the encoder-implied TMC travel from actual
-   TMC travel; the first cycle is discarded and the median of the remaining
-   six reversals is stored as effective backlash.
-7. The joint returns to the middle, then the table and backlash are saved to
-   redundant EEPROM slots A/B with version, sequence, CRC, valid marker, and
-   readback verification. Completion and any abort leave the driver disarmed;
-   reboot before normal operation.
+1. Run `y r 21 man_cal 1`. Firmware stops, disarms the driver, and enters
+   calibration mode. The expected return value is `2`.
+2. Move the joint by hand to the first mechanical limit and run
+   `y r 21 man_cal 2`. The expected return value is `3`.
+3. Move the joint by hand to the desired geometric zero, approximately in the
+   middle of its travel, and run `y r 21 man_cal 3`. The expected return value
+   is `4`.
+4. Move the joint by hand to the second mechanical limit and run
+   `y r 21 man_cal 4`. The expected return value is `5`.
+5. Remove hands and fixtures, then run `y r 21 man_cal 5`. The expected return
+   value is `6`; firmware arms at limited current and starts calibration.
 
-The automatic path stays inside the manually captured physical limits. Its
-margin is 2 percent of the observed span, clamped to 16...200 encoder ticks.
-Writing `cal_cmd=2` aborts from any state.
+Commands are accepted only in this order. Any error or an out-of-order command
+returns `0`. After stage 5 the motor first moves to a safe point near the second
+limit, absorbing spring-back from the hand-loaded endpoint, and then measures
+from the second limit toward the first. The safe margin keeps motor motion away
+from both physical stops, so it is normal that the motor does not touch them.
+
+Firmware then builds the correction table, measures backlash with four short
+rocking cycles near the captured middle, returns to that middle, and saves the
+result to redundant EEPROM slots with CRC and readback verification. The first
+rocking cycle is discarded; the median of the remaining six reversals is stored
+as effective backlash. Completion and any abort leave the driver disarmed.
+
+Monitor progress with `y r 21 pos_get`: the penultimate element is calibration
+state and the last element is progress in percent. State `9` with progress
+`100` means success; state `10` means failure. Reboot the joint after a
+successful save before normal operation. The position captured in stage 3 is
+already the geometric zero; `zero_set` is needed only to adjust it later.
+
+Calibration states are `0` idle, `1` wait limit A, `2` wait limit B, `3`
+ready, `4` move to A, `5` settle, `6` sweep to B, `7` processing, `8` saving,
+`9` complete, `10` failed, and `11` aborted. Manual capture additionally uses
+`22` wait for middle and `23` move to the safe start near limit B. Backlash
+measurement uses `17` move to rocking start, `18` settle, `19` sweep between
+rocking endpoints, `20` return to middle, and `21` settle in the middle.
+
+Before calibrated limits are available, `move_cal` can jog raw TMC velocity:
+
+```bash
+y r 23 arm 1
+y r 23 move_cal 10000
+y r 23 move_cal 0
+```
+
+`move_cal` intentionally ignores travel limits. Use only low velocities while
+watching the joint. The driver must already be armed, fault checks remain
+active, and a nonzero jog stops unless refreshed within one second.
+
+`cal_data` reports the stored scale for checking `joint_full_steps`:
+
+```text
+[valid, manual_span_ticks, tmc_span_steps, measured_full_steps,
+ configured_full_steps, backlash_steps, point_count, safe_margin_ticks]
+```
+
+`measured_full_steps` is calculated from the measured TMC travel and the safe
+encoder span, excluding the margins at both physical limits.
 
 ### Runtime joint-angle estimate
 
@@ -384,27 +417,6 @@ The fused velocity is the filtered derivative of this final angle. If the
 output encoder becomes unavailable, relative tracking continues from TMC
 increments; recovery reanchors the estimator to the absolute encoder without
 retaining a stale offset.
-
-For a fully automatic calibration, invoke the trigger register without a
-value:
-
-```bash
-y r 26 auto_cal
-```
-
-Firmware seeks the first mechanical stop at limited current, detects it from
-the absence of output-encoder motion, backs off, seeks the opposite stop, and
-then runs the same measurement and EEPROM-save stages. Manual calibration
-remains available as a fallback.
-
-Calibration states are `0` idle, `1` wait limit A, `2` wait limit B, `3`
-ready, `4` move to A, `5` settle, `6` sweep to B, `7` processing, `8` saving,
-`9` complete, `10` failed, and `11` aborted.
-Automatic discovery additionally uses `12` seek limit A, `13` back off A, and
-`14` seek limit B. Bidirectional measurement uses `15` settle at B and `16`
-sweep back to A. Midpoint backlash measurement uses `17` move to rocking
-start, `18` settle, `19` sweep between rocking endpoints, `20` return to the
-middle, and `21` settle in the middle.
 
 To refresh only the backlash estimate after mechanical wear, place the joint
 at any suitable position inside its stored safe range and invoke:

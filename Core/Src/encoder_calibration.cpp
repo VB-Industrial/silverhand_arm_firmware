@@ -10,7 +10,10 @@ constexpr int32_t kHalfTurnTicks = kEncoderTicksPerTurn / 2;
 constexpr int32_t kMaximumSpanTicks = 2 * kEncoderTicksPerTurn;
 constexpr int32_t kMinimumSpanTicks = 32;
 constexpr int32_t kMaximumCorrectionTicks = 2048;
-constexpr int32_t kHardLimitToleranceTicks = 16;
+// A hand-loaded mechanism can spring back when the driver is enabled after a
+// manual endpoint capture. Keep this tolerance separate from the stored safe
+// margin; it is used only to reject clearly outward calibration motion.
+constexpr int32_t kHardLimitToleranceTicks = 256;
 }
 
 void EncoderCalibration::initialize(const uint8_t joint_id, const bool encoder_inverted, const uint16_t raw)
@@ -21,7 +24,83 @@ void EncoderCalibration::initialize(const uint8_t joint_id, const bool encoder_i
     has_stored_data_ = encoder_calibration_storage_load(joint_id_, &data_);
 }
 
-bool EncoderCalibration::begin_auto(const uint32_t now_ms, const bool encoder_available, const uint16_t raw)
+bool EncoderCalibration::begin_manual(const bool encoder_available, const uint16_t raw)
+{
+    if (!encoder_available) {
+        return false;
+    }
+    previous_raw_ = raw;
+    position_ticks_ = 0;
+    previous_position_ticks_ = 0;
+    manual_reverse_first_ = false;
+    error_ = EncoderCalibrationError::None;
+    state_ = EncoderCalibrationState::WaitLimitA;
+    return true;
+}
+
+bool EncoderCalibration::advance_manual(
+    const uint32_t now_ms,
+    const bool encoder_available,
+    const uint16_t raw,
+    const int32_t command)
+{
+    if (!encoder_available) {
+        fail(EncoderCalibrationError::EncoderUnavailable);
+        return false;
+    }
+    observe_raw(raw);
+    if ((command == 2) && (state_ == EncoderCalibrationState::WaitLimitA)) {
+        const uint16_t saved_zero_raw = data_.zero_raw;
+        const uint8_t saved_zero_valid = data_.zero_valid;
+        data_ = {};
+        data_.zero_raw = saved_zero_raw;
+        data_.zero_valid = saved_zero_valid;
+        data_.limit_a_raw = raw;
+        position_ticks_ = 0;
+        previous_position_ticks_ = 0;
+        previous_raw_ = raw;
+        state_ = EncoderCalibrationState::WaitMiddle;
+        return true;
+    }
+    if ((command == 3) && (state_ == EncoderCalibrationState::WaitMiddle)) {
+        if (std::abs(position_ticks_) < kMinimumSpanTicks) {
+            return false;
+        }
+        data_.zero_raw = raw;
+        data_.zero_valid = 1U;
+        state_ = EncoderCalibrationState::WaitLimitB;
+        return true;
+    }
+    if ((command == 4) && (state_ == EncoderCalibrationState::WaitLimitB)) {
+        const int32_t span = position_ticks_;
+        if ((std::abs(span) < kMinimumSpanTicks) ||
+            (std::abs(span) >= kMaximumSpanTicks)) {
+            fail(EncoderCalibrationError::InvalidManualSpan);
+            return false;
+        }
+        if (!prepare_automatic_span(raw)) {
+            fail(EncoderCalibrationError::InvalidManualSpan);
+            return false;
+        }
+        state_ = EncoderCalibrationState::Ready;
+        return true;
+    }
+    if ((command == 5) && (state_ == EncoderCalibrationState::Ready)) {
+        tmc_samples_.fill(0);
+        reverse_tmc_samples_.fill(0);
+        manual_reverse_first_ = true;
+        previous_position_ticks_ = position_ticks_;
+        state_started_ms_ = now_ms;
+        state_ = EncoderCalibrationState::MoveToBStart;
+        return true;
+    }
+    return false;
+}
+
+bool EncoderCalibration::begin_auto(
+    const uint32_t now_ms,
+    const bool encoder_available,
+    const uint16_t raw)
 {
     if (!encoder_available || blocks_normal_control()) {
         return false;
@@ -109,6 +188,7 @@ EncoderCalibration::Action EncoderCalibration::update(
     previous_position_ticks_ = position_ticks_;
     observe_raw(raw);
     if ((state_ == EncoderCalibrationState::WaitLimitA) ||
+        (state_ == EncoderCalibrationState::WaitMiddle) ||
         (state_ == EncoderCalibrationState::WaitLimitB) ||
         (state_ == EncoderCalibrationState::Ready)) {
         return action;
@@ -121,7 +201,8 @@ EncoderCalibration::Action EncoderCalibration::update(
          (state_ == EncoderCalibrationState::MoveToMiddle) ||
          (state_ == EncoderCalibrationState::AutoSeekLimitA) ||
          (state_ == EncoderCalibrationState::AutoBackoffA) ||
-         (state_ == EncoderCalibrationState::AutoSeekLimitB)) &&
+         (state_ == EncoderCalibrationState::AutoSeekLimitB) ||
+         (state_ == EncoderCalibrationState::MoveToBStart)) &&
         ((now_ms - state_started_ms_) > kMotionTimeoutMs)) {
         fail(EncoderCalibrationError::MotionTimeout);
         action.command_velocity = true;
@@ -129,6 +210,7 @@ EncoderCalibration::Action EncoderCalibration::update(
         return action;
     }
     if ((state_ == EncoderCalibrationState::MoveToA) ||
+        (state_ == EncoderCalibrationState::MoveToBStart) ||
         (state_ == EncoderCalibrationState::SettleAtA) ||
         (state_ == EncoderCalibrationState::SweepToB) ||
         (state_ == EncoderCalibrationState::SettleAtB) ||
@@ -149,6 +231,20 @@ EncoderCalibration::Action EncoderCalibration::update(
     }
 
     switch (state_) {
+    case EncoderCalibrationState::MoveToBStart:
+        action.command_velocity = true;
+        action.velocity_steps = velocity_toward(safe_end_ticks_);
+        if (reached(safe_end_ticks_, previous_position_ticks_, position_ticks_)) {
+            action.velocity_steps = 0;
+            previous_position_ticks_ = position_ticks_;
+            reverse_tmc_samples_.fill(0);
+            next_point_ = data_.point_count - 1U;
+            reverse_tmc_samples_[next_point_] = 0;
+            action.zero_tmc_position = true;
+            state_started_ms_ = now_ms;
+            state_ = EncoderCalibrationState::ReverseSweepToA;
+        }
+        break;
     case EncoderCalibrationState::AutoSeekLimitA:
         action.command_velocity = true;
         action.velocity_steps = kCalibrationVelocitySteps;
@@ -208,10 +304,14 @@ EncoderCalibration::Action EncoderCalibration::update(
     case EncoderCalibrationState::SettleAtA:
         action.command_velocity = true;
         if ((now_ms - state_started_ms_) >= kSettleTimeMs) {
-            safe_start_ticks_ = position_ticks_;
+            if (!manual_reverse_first_) {
+                safe_start_ticks_ = position_ticks_;
+            }
             previous_position_ticks_ = position_ticks_;
             tmc_samples_.fill(0);
-            reverse_tmc_samples_.fill(0);
+            if (!manual_reverse_first_) {
+                reverse_tmc_samples_.fill(0);
+            }
             tmc_samples_[0] = 0;
             next_point_ = 1U;
             action.zero_tmc_position = true;
@@ -230,8 +330,12 @@ EncoderCalibration::Action EncoderCalibration::update(
         if (reached(safe_end_ticks_, previous_position_ticks_, position_ticks_)) {
             action.velocity_steps = 0;
             tmc_samples_[data_.point_count - 1U] = tmc_position_steps;
-            state_started_ms_ = now_ms;
-            state_ = EncoderCalibrationState::SettleAtB;
+            if (manual_reverse_first_) {
+                state_ = EncoderCalibrationState::Processing;
+            } else {
+                state_started_ms_ = now_ms;
+                state_ = EncoderCalibrationState::SettleAtB;
+            }
         }
         break;
     case EncoderCalibrationState::SettleAtB:
@@ -258,11 +362,32 @@ EncoderCalibration::Action EncoderCalibration::update(
         if (reached(safe_start_ticks_, previous_position_ticks_, position_ticks_)) {
             action.velocity_steps = 0;
             reverse_tmc_samples_[0] = tmc_position_steps;
-            state_ = EncoderCalibrationState::Processing;
+            if (manual_reverse_first_) {
+                // Manual calibration is intentionally a single measurement
+                // pass from limit B toward limit A. Reuse the captured pass
+                // as both table inputs so processing keeps the same storage
+                // format without adding another traversal of the mechanism.
+                tmc_samples_ = reverse_tmc_samples_;
+                state_ = EncoderCalibrationState::Processing;
+            } else {
+                state_ = EncoderCalibrationState::Processing;
+            }
         }
         break;
     case EncoderCalibrationState::Processing: {
         action.command_velocity = true;
+        if (manual_reverse_first_) {
+            const int32_t middle_ticks =
+                safe_start_ticks_ + ((safe_end_ticks_ - safe_start_ticks_) / 2);
+            if (!process_table() || !prepare_backlash_rock(middle_ticks)) {
+                fail(EncoderCalibrationError::InvalidTable);
+                action.disable_driver = true;
+            } else {
+                state_started_ms_ = now_ms;
+                state_ = EncoderCalibrationState::MoveToRockStart;
+            }
+            break;
+        }
         const int32_t middle_ticks = safe_start_ticks_ + ((safe_end_ticks_ - safe_start_ticks_) / 2);
         if (!process_table() || !prepare_backlash_rock(middle_ticks)) {
             fail(EncoderCalibrationError::InvalidTable);

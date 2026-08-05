@@ -58,6 +58,7 @@ int32_t g_servo_tracking_velocity_steps = -1;
 int32_t g_servo_acceleration_steps = -1;
 int32_t g_direct_applied_velocity_steps = 0;
 uint32_t g_servo_last_command_ms = 0U;
+uint32_t g_calibration_jog_last_command_ms = 0U;
 bool g_output_encoder_available = false;
 bool g_output_encoder_degraded = false;
 bool g_encoder_last_read_ok = false;
@@ -69,6 +70,7 @@ bool g_servo_requires_controller = false;
 bool g_servo_service_position_tracking = false;
 bool g_custom_motion_profile_active = false;
 bool g_direct_applied_velocity_valid = false;
+bool g_calibration_jog_active = false;
 motor_servo_state g_servo_state = MOTOR_SERVO_STATE_INACTIVE;
 motor_control_mode g_control_mode = MOTOR_CONTROL_MODE_HOLD;
 
@@ -614,6 +616,32 @@ void update_direct_control(void)
     }
 }
 
+void update_calibration_jog(const uint32_t now_ms)
+{
+    if (!g_calibration_jog_active) {
+        return;
+    }
+    if (!g_fault_manager.motion_allowed() ||
+        !g_tmc_driver.is_enabled() ||
+        ((now_ms - g_calibration_jog_last_command_ms) >= kServoCommandTimeoutMs)) {
+        tmc5160_move(0);
+        g_fault_manager.note_velocity_command(now_ms, false);
+        g_calibration_jog_active = false;
+        g_control_mode = MOTOR_CONTROL_MODE_HOLD;
+    }
+}
+
+void cancel_calibration_jog(void)
+{
+    if (!g_calibration_jog_active) {
+        return;
+    }
+    tmc5160_move(0);
+    g_fault_manager.note_velocity_command(HAL_GetTick(), false);
+    g_calibration_jog_active = false;
+    g_control_mode = MOTOR_CONTROL_MODE_HOLD;
+}
+
 void update_encoder_status(const uint32_t now_ms)
 {
     if (!kRobotJointProfile->has_output_encoder) {
@@ -690,7 +718,8 @@ void update_calibration(const uint32_t now_ms)
         (calibration_state == EncoderCalibrationState::Saving) ||
         (calibration_state == EncoderCalibrationState::AutoSeekLimitA) ||
         (calibration_state == EncoderCalibrationState::AutoBackoffA) ||
-        (calibration_state == EncoderCalibrationState::AutoSeekLimitB);
+        (calibration_state == EncoderCalibrationState::AutoSeekLimitB) ||
+        (calibration_state == EncoderCalibrationState::MoveToBStart);
     if (automatic_motion && !g_tmc_driver.is_enabled()) {
         g_encoder_calibration.fail(EncoderCalibrationError::Driver);
     }
@@ -776,6 +805,7 @@ extern "C" void motor_update(const uint32_t now_ms)
     update_encoder_status(now_ms);
     update_calibration(now_ms);
     update_fusion_state(now_ms);
+    update_calibration_jog(now_ms);
     update_faults(now_ms);
     update_direct_control();
     update_servo_control(now_ms);
@@ -857,6 +887,7 @@ extern "C" bool motor_command(
 
 extern "C" bool motor_move(const int32_t velocity_command)
 {
+    cancel_calibration_jog();
     if (g_encoder_calibration.blocks_normal_control() ||
         !g_fault_manager.motion_allowed() ||
         !g_tmc_driver.is_enabled() ||
@@ -882,8 +913,29 @@ extern "C" bool motor_move(const int32_t velocity_command)
     return true;
 }
 
+extern "C" bool motor_move_calibration(const int32_t velocity_command)
+{
+    if (g_encoder_calibration.blocks_normal_control() ||
+        !g_fault_manager.motion_allowed() ||
+        !g_tmc_driver.is_enabled()) {
+        return false;
+    }
+    clear_servo_target();
+    restore_default_motion_profile();
+    tmc5160_move(velocity_command);
+    const uint32_t now_ms = HAL_GetTick();
+    g_fault_manager.note_velocity_command(now_ms, velocity_command != 0);
+    g_calibration_jog_last_command_ms = now_ms;
+    g_calibration_jog_active = velocity_command != 0;
+    g_control_mode = g_calibration_jog_active
+        ? MOTOR_CONTROL_MODE_CALIBRATION
+        : MOTOR_CONTROL_MODE_HOLD;
+    return true;
+}
+
 extern "C" bool motor_move_radians_per_second(const float velocity_rad_s)
 {
+    cancel_calibration_jog();
     if (!std::isfinite(velocity_rad_s) ||
         g_encoder_calibration.blocks_normal_control() ||
         !g_fault_manager.remote_motion_allowed() ||
@@ -908,6 +960,7 @@ extern "C" bool motor_move_radians_per_second(const float velocity_rad_s)
 
 extern "C" bool motor_set_position_radians(const float target_position_rad)
 {
+    cancel_calibration_jog();
     const JointLimitEnvelope limits = joint_limit_envelope();
     if (!std::isfinite(target_position_rad) ||
         g_encoder_calibration.blocks_normal_control() ||
@@ -919,15 +972,8 @@ extern "C" bool motor_set_position_radians(const float target_position_rad)
         return false;
     }
     const uint32_t now_ms = HAL_GetTick();
-    int32_t target_position_steps = 0;
-    int32_t velocity_steps = 0;
     int32_t acceleration_steps = 0;
-    if (!manipulator_radians_to_tmc_steps(target_position_rad, target_position_steps) ||
-        !radians_to_steps_checked(
-            kRobotJointProfile->maximum_servo_velocity_rad_s,
-            static_cast<int32_t>(kRobotJointProfile->joint_full_steps),
-            &velocity_steps) ||
-        !radians_to_steps_checked(
+    if (!radians_to_steps_checked(
             kPositionRegisterAccelerationRadS2,
             static_cast<int32_t>(kRobotJointProfile->joint_full_steps),
             &acceleration_steps)) {
@@ -944,21 +990,22 @@ extern "C" bool motor_set_position_radians(const float target_position_rad)
     g_servo_target_valid = true;
     g_servo_at_target = false;
     g_servo_requires_controller = false;
-    g_servo_service_position_tracking = true;
+    g_servo_service_position_tracking = false;
     g_servo_maximum_correction_velocity_rad_s =
         kRobotJointProfile->maximum_servo_velocity_rad_s;
     g_servo_tracking_velocity_rad_s = kRobotJointProfile->maximum_servo_velocity_rad_s;
-    g_servo_tracking_velocity_steps = velocity_steps;
-    g_servo_state = MOTOR_SERVO_STATE_TRACKING;
+    g_servo_tracking_velocity_steps = -1;
+    g_servo_state = MOTOR_SERVO_STATE_SETTLING;
     tmc5160_acceleration(static_cast<uint32_t>(acceleration_steps));
     g_custom_motion_profile_active = true;
-    tmc5160_position(target_position_steps, velocity_steps);
+    tmc5160_move(0);
     g_control_mode = MOTOR_CONTROL_MODE_SERVO;
     return true;
 }
 
 extern "C" bool motor_arm(const bool armed)
 {
+    cancel_calibration_jog();
     if (g_encoder_calibration.blocks_normal_control()) {
         return false;
     }
@@ -1096,6 +1143,7 @@ extern "C" bool motor_limit_get_diagnostics(motor_limit_diagnostics* const diagn
 
 extern "C" bool motor_auto_calibration_start(void)
 {
+    cancel_calibration_jog();
     if (!g_fault_manager.motion_allowed() ||
         g_encoder_calibration.blocks_normal_control() ||
         !g_output_encoder_available) {
@@ -1119,6 +1167,46 @@ extern "C" bool motor_auto_calibration_start(void)
     }
     g_control_mode = MOTOR_CONTROL_MODE_CALIBRATION;
     return true;
+}
+
+extern "C" bool motor_manual_calibration_command(const int32_t command)
+{
+    cancel_calibration_jog();
+    if (command == 1) {
+        if (!g_fault_manager.motion_allowed() || !g_output_encoder_available) {
+            return false;
+        }
+        clear_servo_target();
+        restore_default_motion_profile();
+        if (!tmc5160_stop(kServiceStopTimeoutMs) ||
+            (g_tmc_driver.is_enabled() && !g_tmc_driver.disable())) {
+            return false;
+        }
+        if (!g_encoder_calibration.begin_manual(true, g_encoder_angle_raw)) {
+            return false;
+        }
+        g_control_mode = MOTOR_CONTROL_MODE_CALIBRATION;
+        return true;
+    }
+    if ((command < 2) || (command > 5) || !g_output_encoder_available) {
+        return false;
+    }
+    if (command == 5) {
+        if (g_encoder_calibration.state() != EncoderCalibrationState::Ready) {
+            return false;
+        }
+        constexpr uint8_t kMaximumManualCalibrationCurrent = 3U;
+        const uint8_t calibration_current = std::min<uint8_t>(
+            static_cast<uint8_t>(kRobotJointProfile->init_irun),
+            kMaximumManualCalibrationCurrent);
+        tmc5160_set_run_current(calibration_current);
+        if (!g_tmc_driver.is_enabled() && !g_tmc_driver.enable()) {
+            g_encoder_calibration.fail(EncoderCalibrationError::Driver);
+            return false;
+        }
+    }
+    return g_encoder_calibration.advance_manual(
+        HAL_GetTick(), true, g_encoder_angle_raw, command);
 }
 
 extern "C" bool motor_backlash_calibration_start(void)
@@ -1192,6 +1280,40 @@ extern "C" int32_t motor_calibration_error(void)
 extern "C" int32_t motor_calibration_progress(void)
 {
     return g_encoder_calibration.progress_percent();
+}
+
+extern "C" void motor_calibration_data(
+    int32_t* const values,
+    const uint8_t capacity,
+    uint8_t* const count)
+{
+    if (count != nullptr) {
+        *count = 0U;
+    }
+    if ((values == nullptr) || (count == nullptr) || (capacity < 8U)) {
+        return;
+    }
+    const encoder_calibration_data& data = g_encoder_calibration.data();
+    int32_t measured_full_steps = 0;
+    const int64_t safe_span_ticks =
+        std::abs(static_cast<int64_t>(data.manual_span_ticks)) -
+        (2LL * static_cast<int64_t>(data.safe_margin_ticks));
+    if ((safe_span_ticks > 0) && (data.tmc_span_steps != 0)) {
+        const int64_t scaled =
+            (std::abs(static_cast<int64_t>(data.tmc_span_steps)) * 16384LL) /
+            safe_span_ticks;
+        measured_full_steps = static_cast<int32_t>(
+            std::min<int64_t>(scaled, std::numeric_limits<int32_t>::max()));
+    }
+    values[0] = g_encoder_calibration.has_stored_data() ? 1 : 0;
+    values[1] = data.manual_span_ticks;
+    values[2] = data.tmc_span_steps;
+    values[3] = measured_full_steps;
+    values[4] = static_cast<int32_t>(kRobotJointProfile->joint_full_steps);
+    values[5] = data.backlash_steps;
+    values[6] = static_cast<int32_t>(data.point_count);
+    values[7] = static_cast<int32_t>(data.safe_margin_ticks);
+    *count = 8U;
 }
 
 extern "C" float motor_fused_angle_manipulator(void)

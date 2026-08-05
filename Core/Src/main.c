@@ -107,7 +107,7 @@ int main(void)
   setup_cyphal(&hfdcan1);
   HAL_Delay(10);
   motor_init();
-  HAL_Delay(10);
+  HAL_Delay(100);
   if (!system_watchdog_start()) {
     Error_Handler();
   }

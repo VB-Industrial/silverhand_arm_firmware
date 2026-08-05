@@ -30,6 +30,8 @@ enum class EncoderCalibrationState : int32_t {
     RockSweep = 19,
     MoveToMiddle = 20,
     SettleAtMiddle = 21,
+    WaitMiddle = 22,
+    MoveToBStart = 23,
 };
 
 enum class EncoderCalibrationError : int32_t {
@@ -53,6 +55,8 @@ public:
     };
 
     void initialize(uint8_t joint_id, bool encoder_inverted, uint16_t raw);
+    bool begin_manual(bool encoder_available, uint16_t raw);
+    bool advance_manual(uint32_t now_ms, bool encoder_available, uint16_t raw, int32_t command);
     bool begin_auto(uint32_t now_ms, bool encoder_available, uint16_t raw);
     bool begin_backlash(uint32_t now_ms, bool encoder_available, uint16_t raw);
     bool calibrate_zero(uint16_t raw);
@@ -110,6 +114,7 @@ private:
     uint16_t previous_raw_ = 0U;
     int32_t position_ticks_ = 0;
     int32_t previous_position_ticks_ = 0;
+    bool manual_reverse_first_ = false;
     int32_t safe_start_ticks_ = 0;
     int32_t safe_end_ticks_ = 0;
     uint32_t state_started_ms_ = 0U;
