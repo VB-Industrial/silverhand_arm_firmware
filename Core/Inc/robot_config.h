@@ -11,7 +11,9 @@ extern "C" {
 
 static const uint8_t SR_JOINT_INDEX = 1U;
 
-static const bool SR_ENABLE_FUSION_OFFSET_FAULT = true;
+// Fusion offset remains available through pos_get for tuning and logging, but it
+// must not stop motion until the slip detector has been validated on hardware.
+static const bool SR_ENABLE_FUSION_OFFSET_FAULT = false;
 
 typedef struct robot_joint_profile {
     uint8_t joint_index;
