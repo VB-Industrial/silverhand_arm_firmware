@@ -8,7 +8,8 @@
 enum Fault : uint32_t
 {
     FaultNone = 0U,
-    FaultFusionOffsetExceeded = 1UL << 0U,
+    FaultMotorSlip = 1UL << 0U,
+    FaultFusionOffsetExceeded = FaultMotorSlip,
     FaultTmcCommunication = 1UL << 1U,
     FaultTmcEnableReadback = 1UL << 2U,
     FaultTmcConfiguration = 1UL << 3U,
@@ -41,7 +42,8 @@ enum class StopReason : int32_t
 {
     None = 0,
     NetworkOffline = 1,
-    FusionOffsetExceeded = 2,
+    MotorSlip = 2,
+    FusionOffsetExceeded = MotorSlip,
     TmcDriver = 3,
     ControllerOffline = 4,
     CommandTimeout = 5,
@@ -58,6 +60,7 @@ public:
     void initialize(uint32_t now_ms, uint8_t joint_id);
     void note_heartbeat(uint32_t now_ms, bool from_controller);
     void note_velocity_command(uint32_t now_ms, bool active);
+    bool latch_motor_slip();
     UpdateResult update(
         uint32_t now_ms,
         bool fusion_offset_available,
@@ -109,6 +112,6 @@ private:
     bool controller_heartbeat_seen_ = false;
     bool velocity_command_active_ = false;
     bool fusion_offset_exceeded_ = false;
-    bool fusion_offset_fault_latched_ = false;
+    bool motor_slip_fault_latched_ = false;
     bool eeprom_write_failed_ = false;
 };

@@ -4,6 +4,7 @@
 #include "robot_config.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 
 #include "encoder_calibration.hpp"
@@ -21,7 +22,33 @@ namespace
 constexpr uint32_t kDegradedLedTogglePeriodMs = 100U;
 constexpr uint8_t kEncoderErrorStreakThreshold = 3U;
 constexpr uint8_t kEncoderValidStreakThreshold = 10U;
-constexpr float kFusionEncoderCorridorTicks = 2.0F;
+constexpr float kEncoderRadiansPerTick =
+    (2.0F * static_cast<float>(M_PI)) / static_cast<float>(_ENCODER_READMASK + 1);
+constexpr uint32_t kFilterReferencePeriodMs = 20U;
+constexpr size_t frames_for_ms(const uint32_t duration_ms)
+{
+    return (duration_ms + MOTOR_UPDATE_PERIOD_MS - 1U) / MOTOR_UPDATE_PERIOD_MS;
+}
+constexpr float kFusionSpikeThresholdRad = 24.0F * kEncoderRadiansPerTick;
+constexpr float kFusionSpikeConsistencyRad = 24.0F * kEncoderRadiansPerTick;
+constexpr float kExternalMotionThresholdRad = 24.0F * kEncoderRadiansPerTick;
+constexpr uint8_t kFusionSpikeConfirmationFrames =
+    static_cast<uint8_t>(frames_for_ms(60U));
+constexpr float kFusionMaximumEncoderRateRadS = 3.0F;
+constexpr float kFusionEncoderRateMarginRad = 4.0F * kEncoderRadiansPerTick;
+constexpr size_t kSlipWindowSamples = frames_for_ms(1500U);
+constexpr uint8_t kSlipPersistentWindows =
+    static_cast<uint8_t>(frames_for_ms(60U));
+constexpr float kSlipThresholdRad = 10.0F * static_cast<float>(M_PI) / 180.0F;
+constexpr float kBacklashLockMotionRad = 8.0F * kEncoderRadiansPerTick;
+constexpr uint8_t kBacklashLockConfirmationFrames =
+    static_cast<uint8_t>(frames_for_ms(160U));
+constexpr uint8_t kStateConfirmationFrames =
+    static_cast<uint8_t>(frames_for_ms(60U));
+constexpr float kBacklashMismatchMarginRad = 8.0F * kEncoderRadiansPerTick;
+constexpr float kManualEncoderTimeConstantMs = 100.0F;
+constexpr uint32_t kManualQuietWindowMs = 500U;
+constexpr float kManualQuietSpanRad = 24.0F * kEncoderRadiansPerTick;
 constexpr uint32_t kServoCommandTimeoutMs = 1000U;
 constexpr float kServoKp = 4.0F;
 constexpr float kServoMaximumCorrectionVelocityRadS =
@@ -47,6 +74,21 @@ float g_fusion_tmc_angle_rad = 0.0F;
 float g_fusion_offset_rad = 0.0F;
 float g_fusion_encoder_error_rad = 0.0F;
 float g_fusion_backlash_rad = 0.0F;
+float g_fusion_innovation_rad = 0.0F;
+float g_fusion_applied_correction_rad = 0.0F;
+float g_slip_window_residual_rad = 0.0F;
+float g_slip_pending_tmc_delta_rad = 0.0F;
+float g_slip_previous_encoder_angle_rad = 0.0F;
+float g_previous_observed_encoder_angle_rad = 0.0F;
+float g_spike_candidate_innovation_rad = 0.0F;
+float g_stationary_encoder_min_rad = 0.0F;
+float g_stationary_encoder_max_rad = 0.0F;
+float g_manual_encoder_window_min_rad = 0.0F;
+float g_manual_encoder_window_max_rad = 0.0F;
+float g_hybrid_takeup_tmc_travel_rad = 0.0F;
+float g_hybrid_takeup_encoder_travel_rad = 0.0F;
+float g_hybrid_lock_offset_sum_rad = 0.0F;
+float g_fusion_encoder_weight = 1.0F;
 float g_servo_target_position_rad = 0.0F;
 float g_servo_position_error_rad = 0.0F;
 float g_servo_command_velocity_rad_s = 0.0F;
@@ -54,11 +96,26 @@ float g_servo_maximum_correction_velocity_rad_s = kServoMaximumCorrectionVelocit
 float g_servo_tracking_velocity_rad_s = 0.0F;
 float g_direct_requested_velocity_rad_s = 0.0F;
 int32_t g_prev_fusion_tmc_steps = 0;
+int32_t g_encoder_raw_unwrapped = 0;
+int32_t g_encoder_raw_unwrapped_min = 0;
+int32_t g_encoder_raw_unwrapped_max = 0;
+int32_t g_encoder_maximum_frame_delta = 0;
 int32_t g_servo_tracking_velocity_steps = -1;
 int32_t g_servo_acceleration_steps = -1;
 int32_t g_direct_applied_velocity_steps = 0;
 uint32_t g_servo_last_command_ms = 0U;
 uint32_t g_calibration_jog_last_command_ms = 0U;
+uint32_t g_manual_encoder_window_started_ms = 0U;
+uint32_t g_stationary_encoder_window_started_ms = 0U;
+uint32_t g_fusion_rejected_spike_count = 0U;
+uint32_t g_slip_persistent_residual_count = 0U;
+uint8_t g_spike_candidate_frames = 0U;
+uint8_t g_slip_persistent_windows = 0U;
+uint8_t g_hybrid_lock_confirmation_frames = 0U;
+uint8_t g_motion_mismatch_confirmation_frames = 0U;
+uint8_t g_external_motion_confirmation_frames = 0U;
+size_t g_slip_window_index = 0U;
+size_t g_slip_window_count = 0U;
 bool g_output_encoder_available = false;
 bool g_output_encoder_degraded = false;
 bool g_encoder_last_read_ok = false;
@@ -71,6 +128,14 @@ bool g_servo_service_position_tracking = false;
 bool g_custom_motion_profile_active = false;
 bool g_direct_applied_velocity_valid = false;
 bool g_calibration_jog_active = false;
+bool g_encoder_raw_statistics_initialized = false;
+bool g_spike_gate_open = false;
+bool g_stationary_encoder_reference_valid = false;
+bool g_previous_driver_enabled = false;
+bool g_slip_candidate = false;
+int8_t g_hybrid_motion_direction = 0;
+motor_hybrid_state g_hybrid_state = MOTOR_HYBRID_STATE_UNKNOWN;
+std::array<float, kSlipWindowSamples> g_slip_residual_window{};
 motor_servo_state g_servo_state = MOTOR_SERVO_STATE_INACTIVE;
 motor_control_mode g_control_mode = MOTOR_CONTROL_MODE_HOLD;
 
@@ -116,6 +181,35 @@ float raw_encoder_angle_radians(void)
 
     const float radians_per_tick = (2.0F * static_cast<float>(M_PI)) / static_cast<float>(kEncoderTicksPerTurn);
     return static_cast<float>(delta_ticks) * radians_per_tick;
+}
+
+void update_encoder_raw_statistics(const uint16_t raw)
+{
+    constexpr int32_t kEncoderTicksPerTurn = _ENCODER_READMASK + 1;
+    constexpr int32_t kHalfTurnTicks = kEncoderTicksPerTurn / 2;
+    static uint16_t previous_raw = 0U;
+
+    if (!g_encoder_raw_statistics_initialized) {
+        previous_raw = raw;
+        g_encoder_raw_unwrapped = static_cast<int32_t>(raw);
+        g_encoder_raw_unwrapped_min = g_encoder_raw_unwrapped;
+        g_encoder_raw_unwrapped_max = g_encoder_raw_unwrapped;
+        g_encoder_maximum_frame_delta = 0;
+        g_encoder_raw_statistics_initialized = true;
+        return;
+    }
+
+    int32_t delta = static_cast<int32_t>(raw) - static_cast<int32_t>(previous_raw);
+    if (delta > kHalfTurnTicks) {
+        delta -= kEncoderTicksPerTurn;
+    } else if (delta < -kHalfTurnTicks) {
+        delta += kEncoderTicksPerTurn;
+    }
+    previous_raw = raw;
+    g_encoder_raw_unwrapped += delta;
+    g_encoder_raw_unwrapped_min = std::min(g_encoder_raw_unwrapped_min, g_encoder_raw_unwrapped);
+    g_encoder_raw_unwrapped_max = std::max(g_encoder_raw_unwrapped_max, g_encoder_raw_unwrapped);
+    g_encoder_maximum_frame_delta = std::max(g_encoder_maximum_frame_delta, std::abs(delta));
 }
 
 float encoder_angle_radians(bool* const calibrated = nullptr)
@@ -306,8 +400,81 @@ void reset_fusion_tracking(const uint32_t now_ms)
     g_fusion_offset_rad = g_fused_angle_rad - g_fusion_tmc_angle_rad;
     g_fusion_encoder_error_rad = 0.0F;
     g_fusion_backlash_rad = calibrated_backlash_radians();
+    g_fusion_innovation_rad = 0.0F;
+    g_fusion_applied_correction_rad = 0.0F;
+    g_slip_window_residual_rad = 0.0F;
+    g_slip_pending_tmc_delta_rad = 0.0F;
+    g_slip_previous_encoder_angle_rad = g_fusion_encoder_angle_rad;
+    g_previous_observed_encoder_angle_rad = g_fusion_encoder_angle_rad;
+    g_spike_candidate_innovation_rad = 0.0F;
+    g_spike_candidate_frames = 0U;
+    g_spike_gate_open = false;
+    g_stationary_encoder_reference_valid = false;
+    g_stationary_encoder_min_rad = g_fusion_encoder_angle_rad;
+    g_stationary_encoder_max_rad = g_fusion_encoder_angle_rad;
+    g_stationary_encoder_window_started_ms = now_ms;
+    g_external_motion_confirmation_frames = 0U;
+    g_manual_encoder_window_started_ms = now_ms;
+    g_manual_encoder_window_min_rad = g_fusion_encoder_angle_rad;
+    g_manual_encoder_window_max_rad = g_fusion_encoder_angle_rad;
+    g_slip_candidate = false;
+    g_slip_persistent_windows = 0U;
+    g_slip_window_index = 0U;
+    g_slip_window_count = 0U;
+    g_slip_residual_window.fill(0.0F);
+    g_hybrid_takeup_tmc_travel_rad = 0.0F;
+    g_hybrid_takeup_encoder_travel_rad = 0.0F;
+    g_hybrid_motion_direction = 0;
+    g_hybrid_lock_confirmation_frames = 0U;
+    g_hybrid_lock_offset_sum_rad = 0.0F;
+    g_motion_mismatch_confirmation_frames = 0U;
+    g_hybrid_state = MOTOR_HYBRID_STATE_UNKNOWN;
+    g_fusion_encoder_weight = 0.0F;
+    g_previous_driver_enabled = g_tmc_driver.is_enabled();
     g_fused_velocity_rad_s = 0.0F;
     g_fusion_initialized = true;
+}
+
+bool hybrid_state_is_takeup(void)
+{
+    return (g_hybrid_state == MOTOR_HYBRID_STATE_TAKEUP_POSITIVE) ||
+           (g_hybrid_state == MOTOR_HYBRID_STATE_TAKEUP_NEGATIVE);
+}
+
+bool hybrid_state_is_locked_for_direction(const int8_t direction)
+{
+    return ((direction > 0) &&
+            (g_hybrid_state == MOTOR_HYBRID_STATE_LOCKED_POSITIVE)) ||
+           ((direction < 0) &&
+            (g_hybrid_state == MOTOR_HYBRID_STATE_LOCKED_NEGATIVE));
+}
+
+void begin_backlash_takeup(const int8_t direction)
+{
+    g_hybrid_motion_direction = direction;
+    g_hybrid_takeup_tmc_travel_rad = 0.0F;
+    g_hybrid_takeup_encoder_travel_rad = 0.0F;
+    g_hybrid_lock_confirmation_frames = 0U;
+    g_hybrid_lock_offset_sum_rad = 0.0F;
+    g_motion_mismatch_confirmation_frames = 0U;
+    g_slip_window_residual_rad = 0.0F;
+    g_slip_persistent_windows = 0U;
+    g_slip_window_index = 0U;
+    g_slip_window_count = 0U;
+    g_slip_residual_window.fill(0.0F);
+    g_slip_candidate = false;
+    g_hybrid_state = (direction > 0)
+        ? MOTOR_HYBRID_STATE_TAKEUP_POSITIVE
+        : MOTOR_HYBRID_STATE_TAKEUP_NEGATIVE;
+}
+
+void begin_manual_tracking(const uint32_t now_ms)
+{
+    g_hybrid_state = MOTOR_HYBRID_STATE_MANUAL;
+    g_hybrid_motion_direction = 0;
+    g_manual_encoder_window_started_ms = now_ms;
+    g_manual_encoder_window_min_rad = g_fusion_encoder_angle_rad;
+    g_manual_encoder_window_max_rad = g_fusion_encoder_angle_rad;
 }
 
 void set_output_encoder_available(const bool available, const uint32_t now_ms)
@@ -334,18 +501,349 @@ void update_fusion_state(const uint32_t now_ms)
         static_cast<uint32_t>(tmc_steps) - static_cast<uint32_t>(g_prev_fusion_tmc_steps));
     const float delta_tmc_rad = tmc_delta_output_radians(delta_tmc_steps);
     const float previous_fused_angle = g_fused_angle_rad;
-    float predicted_angle = previous_fused_angle + delta_tmc_rad;
+    const float tmc_predicted_angle = previous_fused_angle + delta_tmc_rad;
+    float predicted_angle = tmc_predicted_angle;
+    g_fusion_encoder_weight = 0.0F;
 
     g_fusion_tmc_angle_rad += delta_tmc_rad;
     g_fusion_encoder_angle_rad = encoder_angle_radians(&g_fusion_uses_calibrated_encoder);
     g_fusion_encoder_error_rad = 0.0F;
+    g_fusion_innovation_rad = 0.0F;
+    g_fusion_applied_correction_rad = 0.0F;
+    g_slip_pending_tmc_delta_rad += delta_tmc_rad;
+
+    constexpr float kMotionDirectionThresholdRad = 0.25F * kEncoderRadiansPerTick;
+    const float manipulator_tmc_delta = native_to_manipulator_radians(delta_tmc_rad);
+    const int8_t motion_direction =
+        (manipulator_tmc_delta > kMotionDirectionThresholdRad) ? 1 :
+        ((manipulator_tmc_delta < -kMotionDirectionThresholdRad) ? -1 : 0);
+    if (motion_direction != 0) {
+        g_stationary_encoder_reference_valid = false;
+        g_stationary_encoder_window_started_ms = now_ms;
+        g_external_motion_confirmation_frames = 0U;
+        const bool takeup_direction_changed =
+            hybrid_state_is_takeup() &&
+            (motion_direction != g_hybrid_motion_direction);
+        const bool currently_locked =
+            (g_hybrid_state == MOTOR_HYBRID_STATE_LOCKED_POSITIVE) ||
+            (g_hybrid_state == MOTOR_HYBRID_STATE_LOCKED_NEGATIVE);
+        const bool locked_direction_changed =
+            currently_locked &&
+            !hybrid_state_is_locked_for_direction(motion_direction);
+        const bool recover_mismatch_in_opposite_direction =
+            (g_hybrid_state == MOTOR_HYBRID_STATE_MOTION_MISMATCH) &&
+            (motion_direction != g_hybrid_motion_direction);
+        if ((g_hybrid_state == MOTOR_HYBRID_STATE_UNKNOWN) ||
+            (g_hybrid_state == MOTOR_HYBRID_STATE_MANUAL) ||
+            takeup_direction_changed ||
+            locked_direction_changed ||
+            recover_mismatch_in_opposite_direction) {
+            begin_backlash_takeup(motion_direction);
+        }
+    }
+
+    const bool driver_enabled = g_tmc_driver.is_enabled();
+    if (!driver_enabled && g_previous_driver_enabled) {
+        begin_manual_tracking(now_ms);
+    }
+    if (!driver_enabled) {
+        g_slip_candidate = false;
+        g_slip_persistent_windows = 0U;
+        g_slip_window_index = 0U;
+        g_slip_window_count = 0U;
+        g_slip_window_residual_rad = 0.0F;
+        g_slip_residual_window.fill(0.0F);
+    }
+
+    if (hybrid_state_is_takeup()) {
+        predicted_angle = previous_fused_angle;
+        const float directed_tmc_delta =
+            static_cast<float>(g_hybrid_motion_direction) * manipulator_tmc_delta;
+        if (directed_tmc_delta > 0.0F) {
+            g_hybrid_takeup_tmc_travel_rad += directed_tmc_delta;
+        }
+    }
+
     if (g_output_encoder_available) {
-        constexpr float kRadiansPerEncoderTick =
-            (2.0F * static_cast<float>(M_PI)) / static_cast<float>(_ENCODER_READMASK + 1);
-        constexpr float kEncoderCorridorRad = kFusionEncoderCorridorTicks * kRadiansPerEncoderTick;
-        const float prediction_error = g_fusion_encoder_angle_rad - predicted_angle;
-        if (std::fabs(prediction_error) > kEncoderCorridorRad) {
-            predicted_angle += prediction_error - std::copysign(kEncoderCorridorRad, prediction_error);
+        const float innovation = g_fusion_encoder_angle_rad - tmc_predicted_angle;
+        g_fusion_innovation_rad = innovation;
+        const uint32_t dt_ms = now_ms - g_prev_fusion_ts_ms;
+        const float maximum_encoder_delta =
+            (kFusionMaximumEncoderRateRadS * static_cast<float>(dt_ms) / 1000.0F) +
+            kFusionEncoderRateMarginRad;
+        const float observed_encoder_delta =
+            g_fusion_encoder_angle_rad - g_previous_observed_encoder_angle_rad;
+        g_previous_observed_encoder_angle_rad = g_fusion_encoder_angle_rad;
+        const bool physically_plausible =
+            std::fabs(observed_encoder_delta) <= maximum_encoder_delta;
+        const bool large_encoder_step =
+            std::fabs(observed_encoder_delta) > kFusionSpikeThresholdRad;
+        bool accept_encoder = physically_plausible;
+
+        if (!physically_plausible) {
+            accept_encoder = false;
+            g_spike_candidate_frames = 0U;
+            g_spike_gate_open = false;
+        } else if (!large_encoder_step) {
+            g_spike_candidate_frames = 0U;
+            g_spike_gate_open = false;
+        } else if (!g_spike_gate_open) {
+            const bool consistent_candidate =
+                (g_spike_candidate_frames > 0U) &&
+                ((observed_encoder_delta > 0.0F) ==
+                 (g_spike_candidate_innovation_rad > 0.0F)) &&
+                (std::fabs(observed_encoder_delta - g_spike_candidate_innovation_rad) <=
+                 kFusionSpikeConsistencyRad);
+            if (!consistent_candidate) {
+                g_spike_candidate_frames = 1U;
+                g_spike_candidate_innovation_rad = observed_encoder_delta;
+            } else {
+                ++g_spike_candidate_frames;
+                g_spike_candidate_innovation_rad =
+                    0.5F * (g_spike_candidate_innovation_rad + observed_encoder_delta);
+            }
+            accept_encoder = g_spike_candidate_frames >= kFusionSpikeConfirmationFrames;
+            g_spike_gate_open = accept_encoder;
+        }
+
+        if (accept_encoder) {
+            const float accepted_encoder_delta =
+                g_fusion_encoder_angle_rad - g_slip_previous_encoder_angle_rad;
+            const float accepted_tmc_delta = g_slip_pending_tmc_delta_rad;
+            const float residual_delta =
+                accepted_encoder_delta - accepted_tmc_delta;
+
+            if (motion_direction == 0) {
+                if (!g_stationary_encoder_reference_valid) {
+                    g_stationary_encoder_reference_valid = true;
+                    g_stationary_encoder_min_rad = g_fusion_encoder_angle_rad;
+                    g_stationary_encoder_max_rad = g_fusion_encoder_angle_rad;
+                    g_stationary_encoder_window_started_ms = now_ms;
+                    g_external_motion_confirmation_frames = 0U;
+                }
+                g_stationary_encoder_min_rad = std::min(
+                    g_stationary_encoder_min_rad,
+                    g_fusion_encoder_angle_rad);
+                g_stationary_encoder_max_rad = std::max(
+                    g_stationary_encoder_max_rad,
+                    g_fusion_encoder_angle_rad);
+                const float external_span =
+                    g_stationary_encoder_max_rad - g_stationary_encoder_min_rad;
+                if (external_span > kExternalMotionThresholdRad) {
+                    if (g_external_motion_confirmation_frames < 255U) {
+                        ++g_external_motion_confirmation_frames;
+                    }
+                } else {
+                    g_external_motion_confirmation_frames = 0U;
+                    if ((now_ms - g_stationary_encoder_window_started_ms) >=
+                        kManualQuietWindowMs) {
+                        g_stationary_encoder_window_started_ms = now_ms;
+                        g_stationary_encoder_min_rad = g_fusion_encoder_angle_rad;
+                        g_stationary_encoder_max_rad = g_fusion_encoder_angle_rad;
+                    }
+                }
+            }
+            if (g_slip_window_count == kSlipWindowSamples) {
+                g_slip_window_residual_rad -= g_slip_residual_window[g_slip_window_index];
+            } else {
+                ++g_slip_window_count;
+            }
+            g_slip_residual_window[g_slip_window_index] = residual_delta;
+            g_slip_window_residual_rad += residual_delta;
+            g_slip_window_index = (g_slip_window_index + 1U) % kSlipWindowSamples;
+            g_slip_previous_encoder_angle_rad = g_fusion_encoder_angle_rad;
+            g_slip_pending_tmc_delta_rad = 0.0F;
+
+            if (g_hybrid_state == MOTOR_HYBRID_STATE_MANUAL) {
+                const float manual_alpha = 1.0F - std::exp(
+                    -static_cast<float>(dt_ms) / kManualEncoderTimeConstantMs);
+                predicted_angle =
+                    tmc_predicted_angle + (manual_alpha * innovation);
+                g_fusion_encoder_weight = manual_alpha;
+                g_fusion_applied_correction_rad = predicted_angle - tmc_predicted_angle;
+
+                g_manual_encoder_window_min_rad = std::min(
+                    g_manual_encoder_window_min_rad,
+                    g_fusion_encoder_angle_rad);
+                g_manual_encoder_window_max_rad = std::max(
+                    g_manual_encoder_window_max_rad,
+                    g_fusion_encoder_angle_rad);
+                if ((now_ms - g_manual_encoder_window_started_ms) >=
+                    kManualQuietWindowMs) {
+                    const float window_span =
+                        g_manual_encoder_window_max_rad - g_manual_encoder_window_min_rad;
+                    if (window_span <= kManualQuietSpanRad) {
+                        g_hybrid_state = MOTOR_HYBRID_STATE_UNKNOWN;
+                        g_hybrid_motion_direction = 0;
+                        g_stationary_encoder_reference_valid = true;
+                        g_stationary_encoder_min_rad = g_fusion_encoder_angle_rad;
+                        g_stationary_encoder_max_rad = g_fusion_encoder_angle_rad;
+                        g_stationary_encoder_window_started_ms = now_ms;
+                        g_external_motion_confirmation_frames = 0U;
+                    } else {
+                        g_manual_encoder_window_started_ms = now_ms;
+                        g_manual_encoder_window_min_rad = g_fusion_encoder_angle_rad;
+                        g_manual_encoder_window_max_rad = g_fusion_encoder_angle_rad;
+                    }
+                }
+            } else if (hybrid_state_is_takeup()) {
+                predicted_angle = g_fusion_encoder_angle_rad;
+                g_fusion_encoder_weight = 1.0F;
+                g_fusion_applied_correction_rad = predicted_angle - tmc_predicted_angle;
+
+                const float directed_encoder_delta =
+                    static_cast<float>(g_hybrid_motion_direction) *
+                    native_to_manipulator_radians(accepted_encoder_delta);
+                const float directed_accepted_tmc_delta =
+                    static_cast<float>(g_hybrid_motion_direction) *
+                    native_to_manipulator_radians(accepted_tmc_delta);
+                g_hybrid_takeup_encoder_travel_rad = std::max(
+                    0.0F,
+                    g_hybrid_takeup_encoder_travel_rad + directed_encoder_delta);
+
+                const bool encoder_follows_motor =
+                    (directed_accepted_tmc_delta > kMotionDirectionThresholdRad) &&
+                    (directed_encoder_delta >
+                     (0.25F * directed_accepted_tmc_delta));
+                const bool encoder_contradicts_motor =
+                    directed_encoder_delta < -kMotionDirectionThresholdRad;
+                if (encoder_contradicts_motor) {
+                    g_hybrid_lock_confirmation_frames = 0U;
+                    g_hybrid_lock_offset_sum_rad = 0.0F;
+                } else if (encoder_follows_motor ||
+                           (g_hybrid_lock_confirmation_frames > 0U)) {
+                    if (g_hybrid_lock_confirmation_frames < 255U) {
+                        ++g_hybrid_lock_confirmation_frames;
+                    }
+                    g_hybrid_lock_offset_sum_rad +=
+                        g_fusion_encoder_angle_rad - g_fusion_tmc_angle_rad;
+                }
+
+                if ((g_hybrid_lock_confirmation_frames >= kBacklashLockConfirmationFrames) &&
+                    (g_hybrid_takeup_encoder_travel_rad >= kBacklashLockMotionRad)) {
+                    const float averaged_lock_offset =
+                        g_hybrid_lock_offset_sum_rad /
+                        static_cast<float>(g_hybrid_lock_confirmation_frames);
+                    predicted_angle = g_fusion_tmc_angle_rad + averaged_lock_offset;
+                    g_fusion_applied_correction_rad =
+                        predicted_angle - tmc_predicted_angle;
+                    g_hybrid_state = (g_hybrid_motion_direction > 0)
+                        ? MOTOR_HYBRID_STATE_LOCKED_POSITIVE
+                        : MOTOR_HYBRID_STATE_LOCKED_NEGATIVE;
+                    g_slip_window_residual_rad = 0.0F;
+                    g_slip_persistent_windows = 0U;
+                    g_slip_window_index = 0U;
+                    g_slip_window_count = 0U;
+                    g_slip_residual_window.fill(0.0F);
+                    g_slip_candidate = false;
+                } else if (
+                    (g_hybrid_takeup_tmc_travel_rad >
+                     (g_fusion_backlash_rad + kBacklashMismatchMarginRad)) &&
+                    (g_hybrid_takeup_encoder_travel_rad < kBacklashLockMotionRad)) {
+                    g_hybrid_state = MOTOR_HYBRID_STATE_MOTION_MISMATCH;
+                }
+            }
+
+            if ((motion_direction == 0) &&
+                (g_hybrid_state != MOTOR_HYBRID_STATE_MANUAL) &&
+                (g_external_motion_confirmation_frames >= kStateConfirmationFrames)) {
+                begin_manual_tracking(now_ms);
+                const float manual_alpha = 1.0F - std::exp(
+                    -static_cast<float>(dt_ms) / kManualEncoderTimeConstantMs);
+                predicted_angle =
+                    tmc_predicted_angle + (manual_alpha * innovation);
+                g_fusion_encoder_weight = manual_alpha;
+                g_fusion_applied_correction_rad = predicted_angle - tmc_predicted_angle;
+            } else if (g_hybrid_state == MOTOR_HYBRID_STATE_MOTION_MISMATCH) {
+                predicted_angle = g_fusion_encoder_angle_rad;
+                g_fusion_encoder_weight = 1.0F;
+                g_fusion_applied_correction_rad = predicted_angle - tmc_predicted_angle;
+            }
+
+            const bool slip_detection_enabled =
+                driver_enabled &&
+                !g_encoder_calibration.blocks_normal_control() &&
+                (motion_direction != 0);
+            const bool locked_motion =
+                slip_detection_enabled &&
+                hybrid_state_is_locked_for_direction(motion_direction);
+            if (locked_motion &&
+                (std::fabs(g_slip_window_residual_rad) > kBacklashMismatchMarginRad)) {
+                if (g_motion_mismatch_confirmation_frames < 255U) {
+                    ++g_motion_mismatch_confirmation_frames;
+                }
+            } else if (g_hybrid_state != MOTOR_HYBRID_STATE_MOTION_MISMATCH) {
+                g_motion_mismatch_confirmation_frames = 0U;
+            }
+            if ((g_motion_mismatch_confirmation_frames >= kStateConfirmationFrames) &&
+                (g_hybrid_state != MOTOR_HYBRID_STATE_MOTION_MISMATCH)) {
+                g_hybrid_state = MOTOR_HYBRID_STATE_MOTION_MISMATCH;
+                g_hybrid_lock_confirmation_frames = 0U;
+                predicted_angle = g_fusion_encoder_angle_rad;
+                g_fusion_encoder_weight = 1.0F;
+                g_fusion_applied_correction_rad = predicted_angle - tmc_predicted_angle;
+            }
+            const bool persistent_now =
+                slip_detection_enabled &&
+                !hybrid_state_is_takeup() &&
+                (g_hybrid_state != MOTOR_HYBRID_STATE_UNKNOWN) &&
+                (g_hybrid_state != MOTOR_HYBRID_STATE_MANUAL) &&
+                (g_slip_window_count == kSlipWindowSamples) &&
+                (std::fabs(g_slip_window_residual_rad) > kSlipThresholdRad);
+            if (persistent_now) {
+                if (g_slip_persistent_windows < kSlipPersistentWindows) {
+                    ++g_slip_persistent_windows;
+                }
+                if (!g_slip_candidate &&
+                    (g_slip_persistent_windows >= kSlipPersistentWindows)) {
+                    g_slip_candidate = true;
+                    ++g_slip_persistent_residual_count;
+                    g_hybrid_state = MOTOR_HYBRID_STATE_MOTION_MISMATCH;
+                    predicted_angle = g_fusion_encoder_angle_rad;
+                    g_fusion_encoder_weight = 1.0F;
+                    g_fusion_applied_correction_rad = predicted_angle - tmc_predicted_angle;
+                    g_fault_manager.latch_motor_slip();
+                }
+            } else if (g_hybrid_state != MOTOR_HYBRID_STATE_MOTION_MISMATCH) {
+                g_slip_persistent_windows = 0U;
+                g_slip_candidate = false;
+            }
+
+            if ((g_hybrid_state == MOTOR_HYBRID_STATE_MOTION_MISMATCH) &&
+                !g_slip_candidate &&
+                slip_detection_enabled &&
+                (std::fabs(g_slip_window_residual_rad) < kSlipThresholdRad)) {
+                const float directed_encoder_delta =
+                    static_cast<float>(motion_direction) *
+                    native_to_manipulator_radians(accepted_encoder_delta);
+                const float directed_tmc_delta =
+                    static_cast<float>(motion_direction) *
+                    native_to_manipulator_radians(accepted_tmc_delta);
+                const bool motion_consistent =
+                    (directed_tmc_delta > kMotionDirectionThresholdRad) &&
+                    (directed_encoder_delta > (0.25F * directed_tmc_delta)) &&
+                    (std::fabs(residual_delta) <= kBacklashMismatchMarginRad);
+                if (motion_consistent) {
+                    if (g_hybrid_lock_confirmation_frames < 255U) {
+                        ++g_hybrid_lock_confirmation_frames;
+                    }
+                } else {
+                    g_hybrid_lock_confirmation_frames = 0U;
+                }
+                if (g_hybrid_lock_confirmation_frames >= kStateConfirmationFrames) {
+                    g_hybrid_state = (motion_direction > 0)
+                        ? MOTOR_HYBRID_STATE_LOCKED_POSITIVE
+                        : MOTOR_HYBRID_STATE_LOCKED_NEGATIVE;
+                    g_motion_mismatch_confirmation_frames = 0U;
+                    g_slip_window_residual_rad = 0.0F;
+                    g_slip_persistent_windows = 0U;
+                    g_slip_window_index = 0U;
+                    g_slip_window_count = 0U;
+                    g_slip_residual_window.fill(0.0F);
+                }
+            }
+        } else {
+            ++g_fusion_rejected_spike_count;
         }
         g_fusion_encoder_error_rad = g_fusion_encoder_angle_rad - predicted_angle;
     }
@@ -358,12 +856,20 @@ void update_fusion_state(const uint32_t now_ms)
     if (dt_ms > 0U) {
         const float measured_velocity =
             (g_fused_angle_rad - previous_fused_angle) / (static_cast<float>(dt_ms) / 1000.0F);
-        const float alpha = kRobotJointProfile->velocity_encoder_lpf_alpha;
+        const float reference_alpha = std::clamp(
+            kRobotJointProfile->velocity_encoder_lpf_alpha,
+            0.0F,
+            1.0F);
+        const float period_ratio =
+            static_cast<float>(dt_ms) / static_cast<float>(kFilterReferencePeriodMs);
+        const float alpha =
+            1.0F - std::pow(1.0F - reference_alpha, period_ratio);
         g_fused_velocity_rad_s = (alpha * measured_velocity) +
                                  ((1.0F - alpha) * g_fused_velocity_rad_s);
     }
     g_prev_fusion_tmc_steps = tmc_steps;
     g_prev_fusion_ts_ms = now_ms;
+    g_previous_driver_enabled = driver_enabled;
 }
 
 bool manipulator_radians_to_tmc_steps(
@@ -770,6 +1276,9 @@ extern "C" void motor_init(void)
 
     if (kRobotJointProfile->has_output_encoder) {
         g_encoder_last_read_ok = as50_readAngle(&g_encoder_angle_raw, 100);
+        if (g_encoder_last_read_ok) {
+            update_encoder_raw_statistics(g_encoder_angle_raw);
+        }
         set_output_encoder_available(g_encoder_last_read_ok, now_ms);
     } else {
         g_encoder_angle_raw = 0U;
@@ -797,6 +1306,9 @@ extern "C" void motor_update(const uint32_t now_ms)
 
     if (kRobotJointProfile->has_output_encoder) {
         g_encoder_last_read_ok = as50_readAngle(&g_encoder_angle_raw, 100);
+        if (g_encoder_last_read_ok) {
+            update_encoder_raw_statistics(g_encoder_angle_raw);
+        }
     } else {
         g_encoder_angle_raw = 0U;
         g_encoder_last_read_ok = false;
@@ -913,6 +1425,46 @@ extern "C" bool motor_move(const int32_t velocity_command)
     return true;
 }
 
+extern "C" bool motor_set_tmc_position_steps(const int32_t target_position_steps)
+{
+    cancel_calibration_jog();
+    const JointLimitEnvelope limits = joint_limit_envelope();
+    if (g_encoder_calibration.blocks_normal_control() ||
+        !g_fault_manager.motion_allowed() ||
+        !g_tmc_driver.is_enabled() ||
+        !limits.active) {
+        return false;
+    }
+
+    const int32_t current_position_steps = tmc5160_position_read();
+    const int32_t delta_steps = static_cast<int32_t>(
+        static_cast<uint32_t>(target_position_steps) -
+        static_cast<uint32_t>(current_position_steps));
+    const float target_position_rad = motor_fused_angle_manipulator() +
+        native_to_manipulator_radians(tmc_delta_output_radians(delta_steps));
+    if (!std::isfinite(target_position_rad) ||
+        (target_position_rad < limits.hard_lower_rad) ||
+        (target_position_rad > limits.hard_upper_rad)) {
+        return false;
+    }
+
+    int32_t velocity_steps = 0;
+    if (!radians_to_steps_checked(
+            kRobotJointProfile->maximum_servo_velocity_rad_s,
+            static_cast<int32_t>(kRobotJointProfile->joint_full_steps),
+            &velocity_steps) ||
+        (velocity_steps <= 0)) {
+        return false;
+    }
+
+    clear_servo_target();
+    restore_default_motion_profile();
+    g_fault_manager.note_velocity_command(HAL_GetTick(), false);
+    tmc5160_position(target_position_steps, velocity_steps);
+    g_control_mode = MOTOR_CONTROL_MODE_TMC_POSITION;
+    return true;
+}
+
 extern "C" bool motor_move_calibration(const int32_t velocity_command)
 {
     if (g_encoder_calibration.blocks_normal_control() ||
@@ -1011,6 +1563,9 @@ extern "C" bool motor_arm(const bool armed)
     }
     clear_servo_target();
     if (armed) {
+        if (!g_fault_manager.motion_allowed()) {
+            return false;
+        }
         const bool enabled = g_tmc_driver.enable();
         if (enabled) {
             g_custom_motion_profile_active = false;
@@ -1081,6 +1636,11 @@ extern "C" bool motor_encoder_get_diagnostics(motor_encoder_diagnostics* const d
     diagnostics->transfer_count = encoder_diagnostics.transfer_count;
     diagnostics->error_count = encoder_diagnostics.error_count;
     diagnostics->last_hal_status = static_cast<int32_t>(encoder_diagnostics.last_hal_status);
+    diagnostics->raw_unwrapped_min = g_encoder_raw_unwrapped_min;
+    diagnostics->raw_unwrapped_max = g_encoder_raw_unwrapped_max;
+    diagnostics->raw_unwrapped_span =
+        g_encoder_raw_unwrapped_max - g_encoder_raw_unwrapped_min;
+    diagnostics->maximum_frame_delta = g_encoder_maximum_frame_delta;
     diagnostics->last_read_ok = encoder_diagnostics.last_read_ok;
     diagnostics->has_valid_angle = encoder_diagnostics.has_valid_angle;
     return true;
@@ -1097,6 +1657,20 @@ extern "C" bool motor_fusion_get_diagnostics(motor_fusion_diagnostics* const dia
     diagnostics->fused_angle_rad = native_to_manipulator_radians(g_fused_angle_rad);
     diagnostics->encoder_error_rad = native_to_manipulator_radians(g_fusion_encoder_error_rad);
     diagnostics->backlash_rad = g_fusion_backlash_rad;
+    diagnostics->innovation_rad = native_to_manipulator_radians(g_fusion_innovation_rad);
+    diagnostics->applied_correction_rad =
+        native_to_manipulator_radians(g_fusion_applied_correction_rad);
+    diagnostics->slip_window_residual_rad =
+        native_to_manipulator_radians(g_slip_window_residual_rad);
+    diagnostics->rejected_spike_count = g_fusion_rejected_spike_count;
+    diagnostics->persistent_residual_count = g_slip_persistent_residual_count;
+    diagnostics->takeup_tmc_travel_rad = g_hybrid_takeup_tmc_travel_rad;
+    diagnostics->takeup_encoder_travel_rad = g_hybrid_takeup_encoder_travel_rad;
+    diagnostics->encoder_weight = g_fusion_encoder_weight;
+    diagnostics->hybrid_state = g_hybrid_state;
+    diagnostics->slip_candidate = g_slip_candidate;
+    diagnostics->slip_latched =
+        (g_fault_manager.latched_faults() & FaultMotorSlip) != 0U;
     diagnostics->calibrated_encoder = g_fusion_uses_calibrated_encoder;
     return true;
 }
@@ -1348,6 +1922,11 @@ extern "C" bool motor_ack_fail(void)
 extern "C" int32_t motor_fail_level(void)
 {
     return static_cast<int32_t>(g_fault_manager.level());
+}
+
+extern "C" bool motor_slip_latched(void)
+{
+    return (g_fault_manager.latched_faults() & FaultMotorSlip) != 0U;
 }
 
 extern "C" uint32_t motor_fault_active(void)

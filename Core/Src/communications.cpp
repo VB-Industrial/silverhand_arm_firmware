@@ -95,7 +95,7 @@ public:
 
 DirectVelocityReader* direct_velocity_reader;
 NodeInfoReader* nireader;
-static constexpr size_t NUMBER_OF_REGISTERS = 11;
+static constexpr size_t NUMBER_OF_REGISTERS = 12;
 
 RegistersHandler<NUMBER_OF_REGISTERS>* registers_handler;
 
@@ -226,6 +226,21 @@ void move_handler(
     response._mutable = true;
 }
 
+void tmc_position_set_handler(
+    const uavcan_register_Value_1_0& v_in,
+    uavcan_register_Value_1_0& v_out,
+    RegisterAccessResponse::Type& response)
+{
+    int32_t target_position_steps = motor_position_steps();
+    if (try_get_register_int32(v_in, target_position_steps)) {
+        motor_set_tmc_position_steps(target_position_steps);
+        HAL_GPIO_TogglePin(GPIOD, GPIO_PIN_2);
+    }
+    set_register_int32(v_out, motor_position_steps());
+    response.persistent = false;
+    response._mutable = true;
+}
+
 void pos_set_handler(
     const uavcan_register_Value_1_0& v_in,
     uavcan_register_Value_1_0& v_out,
@@ -249,8 +264,10 @@ void pos_get_handler(
 ) {
     HAL_GPIO_TogglePin(GPIOD, GPIO_PIN_2);
     motor_fusion_diagnostics fusion{};
+    motor_encoder_diagnostics encoder{};
     motor_limit_diagnostics limits{};
     motor_fusion_get_diagnostics(&fusion);
+    motor_encoder_get_diagnostics(&encoder);
     motor_limit_get_diagnostics(&limits);
     const float values[] = {
         static_cast<float>(motor_encoder_raw()),
@@ -272,6 +289,21 @@ void pos_get_handler(
         limits.maximum_velocity_rad_s,
         static_cast<float>(motor_calibration_state()),
         static_cast<float>(motor_calibration_progress()),
+        fusion.innovation_rad,
+        fusion.applied_correction_rad,
+        fusion.slip_window_residual_rad,
+        static_cast<float>(fusion.rejected_spike_count),
+        static_cast<float>(fusion.persistent_residual_count),
+        fusion.slip_candidate ? 1.0F : 0.0F,
+        static_cast<float>(encoder.raw_unwrapped_min),
+        static_cast<float>(encoder.raw_unwrapped_max),
+        static_cast<float>(encoder.raw_unwrapped_span),
+        static_cast<float>(encoder.maximum_frame_delta),
+        static_cast<float>(fusion.hybrid_state),
+        fusion.takeup_tmc_travel_rad,
+        fusion.takeup_encoder_travel_rad,
+        fusion.encoder_weight,
+        fusion.slip_latched ? 1.0F : 0.0F,
     };
     set_register_real32_array(v_out, values, std::size(values));
     response.persistent = false;
@@ -326,7 +358,16 @@ void arm_handler(
         motor_arm(arm_command != 0);
         HAL_GPIO_TogglePin(GPIOD, GPIO_PIN_2);
     }
-    set_register_int32(v_out, motor_driver_enabled() ? 1 : 0);
+    motor_fusion_diagnostics fusion{};
+    motor_fusion_get_diagnostics(&fusion);
+    const int32_t values[] = {
+        motor_driver_enabled() ? 1 : 0,
+        static_cast<int32_t>(fusion.hybrid_state),
+        static_cast<int32_t>(fusion.encoder_weight * 1000.0F),
+        fusion.slip_candidate ? 1 : 0,
+        fusion.slip_latched ? 1 : 0,
+    };
+    set_register_int32_array(v_out, values, std::size(values));
     response.persistent = true;
     response._mutable = true;
 }
@@ -482,6 +523,7 @@ void setup_cyphal(FDCAN_HandleTypeDef* handler) {
             RegisterDefinition{"fail_ack", fail_ack_handler},
             RegisterDefinition{"errors", errors_handler},
             RegisterDefinition{"move", move_handler},
+            RegisterDefinition{"tmc_pos_set", tmc_position_set_handler},
             RegisterDefinition{"zero_set", zero_calibration_handler},
             RegisterDefinition{"luft_cal", backlash_calibration_handler},
             RegisterDefinition{"arm", arm_handler},

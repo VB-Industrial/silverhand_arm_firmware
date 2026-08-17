@@ -10,14 +10,30 @@
 extern "C" {
 #endif
 
+#define MOTOR_UPDATE_PERIOD_MS 10U
+
 typedef struct motor_encoder_diagnostics {
     uint16_t raw_frame;
     uint32_t transfer_count;
     uint32_t error_count;
     int32_t last_hal_status;
+    int32_t raw_unwrapped_min;
+    int32_t raw_unwrapped_max;
+    int32_t raw_unwrapped_span;
+    int32_t maximum_frame_delta;
     bool last_read_ok;
     bool has_valid_angle;
 } motor_encoder_diagnostics;
+
+typedef enum motor_hybrid_state {
+    MOTOR_HYBRID_STATE_UNKNOWN = 0,
+    MOTOR_HYBRID_STATE_TAKEUP_POSITIVE = 1,
+    MOTOR_HYBRID_STATE_LOCKED_POSITIVE = 2,
+    MOTOR_HYBRID_STATE_TAKEUP_NEGATIVE = 3,
+    MOTOR_HYBRID_STATE_LOCKED_NEGATIVE = 4,
+    MOTOR_HYBRID_STATE_MOTION_MISMATCH = 5,
+    MOTOR_HYBRID_STATE_MANUAL = 6,
+} motor_hybrid_state;
 
 typedef struct motor_fusion_diagnostics {
     float encoder_angle_rad;
@@ -26,6 +42,17 @@ typedef struct motor_fusion_diagnostics {
     float fused_angle_rad;
     float encoder_error_rad;
     float backlash_rad;
+    float innovation_rad;
+    float applied_correction_rad;
+    float slip_window_residual_rad;
+    uint32_t rejected_spike_count;
+    uint32_t persistent_residual_count;
+    float takeup_tmc_travel_rad;
+    float takeup_encoder_travel_rad;
+    float encoder_weight;
+    motor_hybrid_state hybrid_state;
+    bool slip_candidate;
+    bool slip_latched;
     bool calibrated_encoder;
 } motor_fusion_diagnostics;
 
@@ -60,6 +87,7 @@ typedef enum motor_control_mode {
     MOTOR_CONTROL_MODE_SERVO = 1,
     MOTOR_CONTROL_MODE_DIRECT = 2,
     MOTOR_CONTROL_MODE_CALIBRATION = 3,
+    MOTOR_CONTROL_MODE_TMC_POSITION = 4,
 } motor_control_mode;
 
 void motor_init(void);
@@ -67,6 +95,7 @@ void motor_update(uint32_t now_ms);
 
 bool motor_command(float position_rad, float velocity_rad_s, float acceleration_rad_s2);
 bool motor_move(int32_t velocity_command);
+bool motor_set_tmc_position_steps(int32_t target_position_steps);
 bool motor_move_calibration(int32_t velocity_command);
 bool motor_move_radians_per_second(float velocity_rad_s);
 bool motor_set_position_radians(float target_position_rad);
@@ -99,6 +128,7 @@ float motor_fused_velocity_manipulator(void);
 
 bool motor_ack_fail(void);
 int32_t motor_fail_level(void);
+bool motor_slip_latched(void);
 uint32_t motor_fault_active(void);
 uint32_t motor_fault_latched(void);
 int32_t motor_network_state(void);

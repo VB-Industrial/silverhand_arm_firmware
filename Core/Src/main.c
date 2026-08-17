@@ -128,7 +128,7 @@ int main(void)
           last_hbeat = now;
           heartbeat();
       }
-      if ( (now - last_motor_update) >= 20) {
+      if ( (now - last_motor_update) >= MOTOR_UPDATE_PERIOD_MS) {
           last_motor_update = now;
           motor_update(now);
           motor_cycle_completed = true;

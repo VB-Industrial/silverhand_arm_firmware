@@ -79,15 +79,20 @@ FaultManager::UpdateResult FaultManager::update(
 {
     UpdateResult result{false};
 
+    if (motor_slip_fault_latched_) {
+        result.stop_motion = true;
+        stop_reason_ = StopReason::MotorSlip;
+    }
+
     if (update_network(now_ms)) {
         result.stop_motion = true;
-        if (((active_faults_ & kFaultLevelMask) == 0U) && !fusion_offset_fault_latched_) {
+        if (((active_faults_ & kFaultLevelMask) == 0U) && !motor_slip_fault_latched_) {
             stop_reason_ = StopReason::NetworkOffline;
         }
     }
     if (update_controller(now_ms)) {
         result.stop_motion = true;
-        if (((active_faults_ & kFaultLevelMask) == 0U) && !fusion_offset_fault_latched_) {
+        if (((active_faults_ & kFaultLevelMask) == 0U) && !motor_slip_fault_latched_) {
             stop_reason_ = StopReason::ControllerOffline;
         }
     }
@@ -102,7 +107,7 @@ FaultManager::UpdateResult FaultManager::update(
             fusion_offset_rad,
             backlash_rad)) {
         result.stop_motion = true;
-        stop_reason_ = StopReason::FusionOffsetExceeded;
+        stop_reason_ = StopReason::MotorSlip;
     }
 
     const uint32_t previous_tmc_faults = active_faults_ & kFaultLevelMask;
@@ -129,12 +134,12 @@ FaultManager::UpdateResult FaultManager::update(
 
 bool FaultManager::acknowledge()
 {
-    const bool sync_offset = (latched_faults_ & FaultFusionOffsetExceeded) != 0U;
+    const bool sync_offset = (latched_faults_ & FaultMotorSlip) != 0U;
     if (sync_offset) {
-        active_faults_ &= ~FaultFusionOffsetExceeded;
+        active_faults_ &= ~FaultMotorSlip;
         fusion_offset_exceeded_since_ms_ = 0U;
         fusion_offset_exceeded_ = false;
-        fusion_offset_fault_latched_ = false;
+        motor_slip_fault_latched_ = false;
     }
 
     latched_faults_ &= active_faults_;
@@ -144,7 +149,18 @@ bool FaultManager::acknowledge()
 
 bool FaultManager::motion_allowed() const
 {
-    return !fusion_offset_fault_latched_;
+    return !motor_slip_fault_latched_;
+}
+
+bool FaultManager::latch_motor_slip()
+{
+    active_faults_ |= FaultMotorSlip;
+    latched_faults_ |= FaultMotorSlip;
+    stop_reason_ = StopReason::MotorSlip;
+    const bool newly_latched = !motor_slip_fault_latched_;
+    motor_slip_fault_latched_ = true;
+    update_level();
+    return newly_latched;
 }
 
 bool FaultManager::remote_motion_allowed() const
@@ -231,6 +247,10 @@ bool FaultManager::update_fusion_offset(
     const float offset_rad,
     const float backlash_rad)
 {
+    if (motor_slip_fault_latched_) {
+        active_faults_ |= FaultMotorSlip;
+        return false;
+    }
     if (!available || !std::isfinite(offset_rad) || !std::isfinite(backlash_rad)) {
         active_faults_ &= ~FaultFusionOffsetExceeded;
         fusion_offset_exceeded_since_ms_ = 0U;
@@ -256,12 +276,12 @@ bool FaultManager::update_fusion_offset(
 
     if ((now_ms - fusion_offset_exceeded_since_ms_) >= kFusionOffsetDebounceMs) {
         active_faults_ |= FaultFusionOffsetExceeded;
-        if (!fusion_offset_fault_latched_) {
-            fusion_offset_fault_latched_ = true;
+        if (!motor_slip_fault_latched_) {
+            motor_slip_fault_latched_ = true;
             return true;
         }
     }
-    if (fusion_offset_fault_latched_) {
+    if (motor_slip_fault_latched_) {
         active_faults_ |= FaultFusionOffsetExceeded;
     }
     return false;
@@ -333,7 +353,7 @@ void FaultManager::update_persistent_log(
 
 void FaultManager::update_level()
 {
-    if (((active_faults_ & kFaultLevelMask) != 0U) || fusion_offset_fault_latched_) {
+    if (((active_faults_ & kFaultLevelMask) != 0U) || motor_slip_fault_latched_) {
         level_ = FaultLevel::Fault;
     } else if ((network_state_ == NetworkState::Offline) ||
                (controller_state_ == NetworkState::Offline) ||

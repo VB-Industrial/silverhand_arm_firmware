@@ -229,16 +229,26 @@ Cyphal command and feedback subjects are defined per joint in `robot_config.h`:
 - `1131`–`1136`: per-joint `angular_velocity.Scalar.1.0` DIRECT commands
   in joint rad/s from the controller.
 
-The node exposes a compact public interface of nine Cyphal registers:
+The node exposes a compact public interface of twelve Cyphal registers:
 
-- `pos_get` (read-only `real32[19]`): `[encoder_raw, tmc_raw_steps,
+- `pos_get` (read-only `real32[34]`): `[encoder_raw, tmc_raw_steps,
   encoder_angle, tmc_angle, fusion_offset, fused_angle, fused_velocity,
   encoder_residual, measured_backlash, control_mode, calibrated,
   hard_lower, soft_lower, soft_upper, hard_upper, allowed_velocity_min,
-  allowed_velocity_max, calibration_state, calibration_progress]`. Angles are
-  in manipulator radians and velocities in rad/s. `control_mode` is `0` hold,
-  `1` servo, `2` direct, or `3` calibration. Raw integer positions are encoded
-  as `real32` because Cyphal register arrays cannot mix element types.
+  allowed_velocity_max, calibration_state, calibration_progress,
+  innovation_rad, applied_correction_rad, slip_window_residual_rad,
+  rejected_spike_count, persistent_residual_count, slip_candidate,
+  encoder_raw_min, encoder_raw_max, encoder_raw_span,
+  encoder_maximum_frame_delta, hybrid_state, takeup_tmc_travel_rad,
+  takeup_encoder_travel_rad, encoder_weight, slip_latched]`. Angles are
+  in manipulator radians and velocities in rad/s. Fields 19 through 24 are
+  non-blocking fusion/slip diagnostics. Fields 25 through 28 accumulate raw
+  encoder statistics on every 10-ms motor cycle since boot; min/max are in an
+  unwrapped coordinate. Fields 29 through 33 report the hybrid state,
+  current take-up travel, encoder weight, and latched slip. Calibration state and progress remain at indices 17
+  and 18. `control_mode` is `0` hold, `1` servo, `2` direct, `3` calibration,
+  or `4` raw TMC position. Raw integer positions and counters are encoded as `real32`
+  because Cyphal register arrays cannot mix element types.
 - `pos_set`: writing an absolute manipulator position in radians (`real32`)
   immediately enters fused-angle SERVO settling. This one-shot service target does not require a
   controller or network heartbeat and remains held until another command,
@@ -246,8 +256,6 @@ The node exposes a compact public interface of nine Cyphal registers:
   is saturated by the per-joint SERVO velocity limit. The TMC5160 position
   ramp uses `1 rad/s^2`; after the driver reports `position_reached`, the
   fused-angle P loop removes the remaining output-position error.
-- `auto_cal`: reading this trigger register starts a fully automatic low-current
-  limit search and calibration; use the final two `pos_get` fields for status.
 - `luft_cal`: reading this trigger register starts only the low-current
   backlash-rocking stage around the current position. It preserves the stored
   limits, correction table, TMC span, and geometric zero.
@@ -256,9 +264,16 @@ The node exposes a compact public interface of nine Cyphal registers:
   TMC5160 position to zero. Every read triggers a new zero calibration.
 - `move`: debug DIRECT velocity command in motor microsteps/s. Use `--` before
   a negative value, for example `y r 26 move -- -20000`; write zero to stop.
-- `arm`: write `0` to disarm or `1` to arm the TMC5160 driver; reading returns
-  the enable state. This is a service/debug control; normal startup arms
-  automatically.
+- `tmc_pos_set`: debug absolute TMC5160 position target as an `int32` number of
+  microsteps, for example `y r 26 tmc_pos_set 120000`. The exact integer is
+  written to `XTARGET` without conversion through radians or `float`; reading
+  returns the current `XACTUAL`. Driver, fault, calibration, and calibrated hard
+  limit checks remain active. The move uses the configured SERVO velocity but
+  deliberately does not perform fused-angle settling afterward.
+- `arm`: write scalar `0` to disarm or `1` to arm the TMC5160 driver. Reading
+  returns `int32[5]`: `[enabled, hybrid_state, encoder_weight_milli,
+  slip_candidate, slip_latched]`. This is a service/debug control; normal
+  startup arms automatically.
 - `fail_ack`: write `1` to acknowledge a recoverable session-latched fault.
 - `errors` (read-only `int32[22]`): `[active_mask, latched_mask, fault_level,
   stop_reason, network_state, controller_state, tmc_state, tmc_error,
@@ -278,7 +293,7 @@ Fault mask bits are:
 
 | Bit | Meaning |
 | --- | --- |
-| 0 | Motor slip: fusion offset exceeded its plausible backlash range |
+| 0 | Confirmed motor slip: encoder/TMC motion mismatch (latched) |
 | 1 | TMC5160 communication failure |
 | 2 | TMC5160 enable-pin readback failure |
 | 3 | TMC5160 configuration readback failure |
@@ -350,11 +365,11 @@ result to redundant EEPROM slots with CRC and readback verification. The first
 rocking cycle is discarded; the median of the remaining six reversals is stored
 as effective backlash. Completion and any abort leave the driver disarmed.
 
-Monitor progress with `y r 21 pos_get`: the penultimate element is calibration
-state and the last element is progress in percent. State `9` with progress
-`100` means success; state `10` means failure. Reboot the joint after a
-successful save before normal operation. The position captured in stage 3 is
-already the geometric zero; `zero_set` is needed only to adjust it later.
+Monitor progress with `y r 21 pos_get`: elements 17 and 18 are calibration
+state and progress in percent. State `9` with progress `100` means success;
+state `10` means failure. Reboot the joint after a successful save before
+normal operation. The position captured in stage 3 is already the geometric
+zero; `zero_set` is needed only to adjust it later.
 
 Calibration states are `0` idle, `1` wait limit A, `2` wait limit B, `3`
 ready, `4` move to A, `5` settle, `6` sweep to B, `7` processing, `8` saving,
@@ -393,23 +408,57 @@ the corrected geometric zero. TMC position increments are converted to output
 radians using the measured `tmc_span_steps`, so the motor and output encoder use
 the same calibrated coordinate scale.
 
-The estimator keeps one floating offset between the relative TMC position and
-the absolute output encoder. TMC increments provide fine motion inside a
-two-encoder-tick corridor. If the prediction leaves that corridor, only the
-offset required to return to its edge is applied. The offset can therefore move
-partially or completely as mechanical backlash is taken up; firmware does not
-infer a full backlash transition from a velocity reversal. Stored
-`backlash_steps` is converted to output radians and reported as the expected
-offset range in `pos_get`, but is not added to the position unconditionally.
+The hybrid estimator anchors the initial absolute angle to the calibrated
+output encoder and uses one prediction/correction model. Its prediction is the
+previous fused angle plus the calibrated TMC increment. The accepted encoder
+innovation is applied with a state-dependent weight: zero for consistent motion
+with backlash locked, and one for confirmed encoder-only motion or backlash
+take-up. Fused velocity is always the filtered derivative of that same final
+angle; there is no separate velocity estimator branch.
 
-The absolute floating offset is reported continuously by `pos_get` for logging
-and slip-detector tuning. The legacy blocking check against
-`max(15 degrees, 1.5 * measured_backlash + 2 degrees)` is disabled in
-`robot_config.h`: fusion offset cannot set fault bit 0, stop motion, or require
-`fail_ack`. It must remain non-blocking until a spike-filtered slip detector has
-been validated on hardware. The existing fault-manager implementation is kept
-dormant so the final detector can be integrated without changing the public
-diagnostic contract.
+With the driver disarmed, TMC motion is not trusted. Encoder motion beyond the
+spike/deadband gate updates the physical angle, while small stationary noise is
+ignored and slip detection is disabled. Arming reanchors the estimate to the
+current encoder pose and resets backlash direction to unknown. The first motor
+motion or a direction reversal is therefore tracked from the encoder until
+16 consistent frames (160 ms) confirm that backlash has been taken up. The
+encoder/TMC offset is averaged across those frames instead of being captured
+from one noisy sample; subsequent consistent movement is integrated exactly
+from TMC increments for repeatability.
+
+During locked motor motion, a rolling encoder/TMC residual above eight encoder
+ticks for six accepted frames (60 ms) switches the estimate to encoder-only
+`MOTION_MISMATCH`. This source change is deliberately separate from the much
+larger, slower threshold that declares a motor slip.
+
+Hybrid states are `0` unknown, `1` positive take-up, `2` positive locked, `3`
+negative take-up, `4` negative locked, `5` motion mismatch, and `6` manual or
+encoder-only motion. An encoder increment larger than 24 ticks must remain
+direction- and magnitude-consistent for six frames (60 ms) before it is accepted; an
+encoder jump exceeding the physical-rate gate is rejected. With stationary TMC,
+external motion is recognized after the encoder span within a rolling 500-ms
+stationary window exceeds 24 ticks for six frames (60 ms), so the observed idle span of about 20 ticks does
+not masquerade as hand movement while a backlash rocking span does. Once in
+`MANUAL`, the angle follows only the
+encoder through a 100-ms first-order filter; the entry threshold no longer
+quantizes subsequent forward or reverse motion. A 500-ms encoder window no
+wider than 24 ticks confirms rest, freezes the fused angle, and returns the
+state to direction-neutral `UNKNOWN`. The next motor motion must therefore pass
+through backlash take-up before either directional lock is asserted.
+
+The absolute floating offset is reported continuously by `pos_get` for logging.
+The legacy blocking check against an absolute fusion offset remains disabled;
+fault bit 0 is now driven only by the windowed motion-mismatch detector.
+
+The slip detector compares accepted output-encoder increments with accumulated
+TMC increments over 150 frames (about 1.5 seconds). While armed and moving, a
+residual above 10 degrees for six consecutive evaluations (60 ms) latches motor-slip
+fault bit 0, stops motion, and blocks subsequent motion commands. The fault can
+be cleared only by `fail_ack 1` or a node reset. A successful acknowledgement
+reanchors the estimator to the current encoder angle and resets backlash state;
+a persistent mismatch will latch again. Disarmed/manual movement never raises
+this fault. `rejected_spike_count`, signed window residual, encoder weight, and
+the latest applied correction are reported for tuning.
 
 The fused velocity is the filtered derivative of this final angle. If the
 output encoder becomes unavailable, relative tracking continues from TMC
