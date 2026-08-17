@@ -308,26 +308,36 @@ Fault mask bits are:
 
 ## SERVO control
 
-The per-joint `Planar.0.1` command is interpreted as a trajectory point. While
-successive position targets differ, the TMC5160 runs in position mode toward
-each target using the absolute angular velocity supplied in the message. The
+The per-joint `Planar.0.1` command is interpreted as a trajectory point. The
+position is always the authoritative absolute target, while the absolute
+angular velocity supplied in the message is feed-forward. While the command
+stream is alive and feed-forward is above `0.02 rad/s`, firmware passes that
+speed to the TMC5160 without adding output-position-error correction. Once
+feed-forward reaches `0.02 rad/s`, firmware holds a fixed `0.02 rad/s` finishing
+speed. Direction follows the position error, and the TMC5160 remains in position
+mode toward the absolute target. Thus a lagging joint continues approaching the
+final target after feed-forward reaches zero without modulating velocity from
+the quantized output-angle error. The
 acceleration field selects the TMC5160 ramp acceleration and deceleration. Zero
 requests the maximum default `A1/AMAX/DMAX/D1` profile; a finite positive value
 is converted from joint rad/s^2 to motor microsteps/s^2. Negative and non-finite
 acceleration commands are rejected. DIRECT velocity commands use their separate
 `1131`-`1136` subjects.
 
-When two successive commands contain exactly the same position, firmware
-switches to closed-loop settling against the fused output angle. A proportional
-controller (`Kp = 4 s^-1`) commands joint velocity. Per-joint SERVO and DIRECT
+Repeated commands containing the same final position remain in feed-forward
+tracking and update its velocity. After the command stream becomes silent, a
+proportional settling controller (`Kp = 4 s^-1`) commands joint velocity against
+the fused output angle. Per-joint SERVO and DIRECT
 velocity caps are configured by `maximum_servo_velocity_rad_s` and
 `maximum_direct_velocity_rad_s` in `robot_config.h`; their current defaults are
 `0.1 rad/s` and the separately tested `0.12 rad/s`.
-It stops inside `0.01 degree` and resumes correction if the output moves farther
-than `0.03 degree`. The position error is not angle-wrapped because the public
-joint coordinate intentionally covers `-2*pi` through `+2*pi`.
+It stops inside four output-encoder ticks and resumes correction only after the
+output moves farther than eight ticks. This hysteresis prevents stationary
+encoder noise from making the motor hunt around a TMC position that has already
+been reached. The position error is not angle-wrapped because the public joint
+coordinate intentionally covers `-2*pi` through `+2*pi`.
 
-If the position-command stream becomes silent for 1 second, the latest target
+If the position-command stream becomes silent for 0.5 second, the latest target
 is retained and the same fused-angle settling loop takes over. It remains a
 closed-loop position HOLD while heartbeat from `controller_node_id` is alive.
 Loss of that controller heartbeat, a fault, a DIRECT command, or entry into
