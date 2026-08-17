@@ -9,7 +9,7 @@
 extern "C" {
 #endif
 
-static const uint8_t SR_JOINT_INDEX = 6U;
+static const uint8_t SR_JOINT_INDEX = 3U;
 
 // Fusion offset remains available through pos_get for tuning and logging, but it
 // must not stop motion until the slip detector has been validated on hardware.

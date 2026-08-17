@@ -39,7 +39,7 @@ constexpr float kFusionEncoderRateMarginRad = 4.0F * kEncoderRadiansPerTick;
 constexpr size_t kSlipWindowSamples = frames_for_ms(1500U);
 constexpr uint8_t kSlipPersistentWindows =
     static_cast<uint8_t>(frames_for_ms(60U));
-constexpr float kSlipThresholdRad = 10.0F * static_cast<float>(M_PI) / 180.0F;
+constexpr float kSlipBacklashMultiplier = 10.0F;
 constexpr float kBacklashLockMotionRad = 8.0F * kEncoderRadiansPerTick;
 constexpr uint8_t kBacklashLockConfirmationFrames =
     static_cast<uint8_t>(frames_for_ms(160U));
@@ -764,6 +764,11 @@ void update_fusion_state(const uint32_t now_ms)
                 driver_enabled &&
                 !g_encoder_calibration.blocks_normal_control() &&
                 (motion_direction != 0);
+            const float slip_threshold_rad =
+                kSlipBacklashMultiplier * g_fusion_backlash_rad;
+            const bool slip_threshold_valid =
+                std::isfinite(slip_threshold_rad) &&
+                (slip_threshold_rad > 0.0F);
             const bool locked_motion =
                 slip_detection_enabled &&
                 hybrid_state_is_locked_for_direction(motion_direction);
@@ -788,8 +793,8 @@ void update_fusion_state(const uint32_t now_ms)
                 !hybrid_state_is_takeup() &&
                 (g_hybrid_state != MOTOR_HYBRID_STATE_UNKNOWN) &&
                 (g_hybrid_state != MOTOR_HYBRID_STATE_MANUAL) &&
-                (g_slip_window_count == kSlipWindowSamples) &&
-                (std::fabs(g_slip_window_residual_rad) > kSlipThresholdRad);
+                slip_threshold_valid &&
+                (std::fabs(g_slip_window_residual_rad) > slip_threshold_rad);
             if (persistent_now) {
                 if (g_slip_persistent_windows < kSlipPersistentWindows) {
                     ++g_slip_persistent_windows;
@@ -812,7 +817,8 @@ void update_fusion_state(const uint32_t now_ms)
             if ((g_hybrid_state == MOTOR_HYBRID_STATE_MOTION_MISMATCH) &&
                 !g_slip_candidate &&
                 slip_detection_enabled &&
-                (std::fabs(g_slip_window_residual_rad) < kSlipThresholdRad)) {
+                slip_threshold_valid &&
+                (std::fabs(g_slip_window_residual_rad) < slip_threshold_rad)) {
                 const float directed_encoder_delta =
                     static_cast<float>(motion_direction) *
                     native_to_manipulator_radians(accepted_encoder_delta);
@@ -1275,6 +1281,11 @@ extern "C" void motor_init(void)
     g_zero_enc_runtime = kRobotJointProfile->default_zero_enc;
 
     if (kRobotJointProfile->has_output_encoder) {
+        // AS50xx replies are pipelined: the first SPI exchange after power-up
+        // returns the response to an earlier/undefined command.  Prime the
+        // pipeline before using an angle to anchor the absolute joint state.
+        uint16_t discarded_encoder_frame = 0U;
+        (void)as50_readAngle(&discarded_encoder_frame, 100);
         g_encoder_last_read_ok = as50_readAngle(&g_encoder_angle_raw, 100);
         if (g_encoder_last_read_ok) {
             update_encoder_raw_statistics(g_encoder_angle_raw);

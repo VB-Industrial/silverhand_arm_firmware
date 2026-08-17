@@ -451,8 +451,9 @@ The legacy blocking check against an absolute fusion offset remains disabled;
 fault bit 0 is now driven only by the windowed motion-mismatch detector.
 
 The slip detector compares accepted output-encoder increments with accumulated
-TMC increments over 150 frames (about 1.5 seconds). While armed and moving, a
-residual above 10 degrees for six consecutive evaluations (60 ms) latches motor-slip
+TMC increments in a rolling diagnostic window. While armed and moving, a
+residual above ten times the calibrated joint backlash for six consecutive
+evaluations (60 ms) latches motor-slip
 fault bit 0, stops motion, and blocks subsequent motion commands. The fault can
 be cleared only by `fail_ack 1` or a node reset. A successful acknowledgement
 reanchors the estimator to the current encoder angle and resets backlash state;
