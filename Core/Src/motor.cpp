@@ -889,8 +889,8 @@ bool manipulator_radians_to_tmc_steps(
         return false;
     }
 
-    const float target_delta_rad =
-        manipulator_angle_rad - motor_fused_angle_manipulator();
+    const float target_delta_rad = manipulator_to_native_radians(
+        manipulator_angle_rad - motor_fused_angle_manipulator());
     const float radians_per_tmc_step = tmc_delta_output_radians(1);
     if (!std::isfinite(radians_per_tmc_step) ||
         (std::fabs(radians_per_tmc_step) < 1.0e-12F)) {
