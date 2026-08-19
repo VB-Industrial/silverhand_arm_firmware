@@ -368,6 +368,7 @@ void errors_handler(
         static_cast<int32_t>(driver.health_read_failure_count),
         static_cast<int32_t>(driver.enable_readback_mismatch_count),
         static_cast<int32_t>(driver.critical_status_count),
+        motor_calibration_failure_state(),
     };
     set_register_int32_array(v_out, values, std::size(values));
     response.persistent = false;

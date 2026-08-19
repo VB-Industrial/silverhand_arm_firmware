@@ -32,6 +32,7 @@ enum class EncoderCalibrationState : int32_t {
     SettleAtMiddle = 21,
     WaitMiddle = 22,
     MoveToBStart = 23,
+    ManualSettleAtA = 24,
 };
 
 enum class EncoderCalibrationError : int32_t {
@@ -65,6 +66,7 @@ public:
 
     EncoderCalibrationState state() const;
     EncoderCalibrationError error() const;
+    int32_t failure_state() const;
     int32_t progress_percent() const;
     bool blocks_normal_control() const;
     const encoder_calibration_data& data() const;
@@ -94,12 +96,14 @@ private:
     bool prepare_automatic_span(uint16_t raw);
 
     static constexpr int32_t kCalibrationVelocitySteps = 20000;
+    static constexpr int32_t kManualCalibrationVelocitySteps = 40000;
     static constexpr uint32_t kSettleTimeMs = 500U;
     static constexpr uint32_t kMotionTimeoutMs = 360000U;
     static constexpr uint32_t kAutoStallTimeMs = 300U;
     static constexpr uint32_t kAutoStartupGraceMs = 500U;
     static constexpr int32_t kAutoStallMotionTicks = 6;
-    static constexpr uint8_t kBacklashRockCycles = 4U;
+    // Two complete back-and-forth cycles produce four backlash traversals.
+    static constexpr uint8_t kBacklashRockCycles = 2U;
     static constexpr uint8_t kBacklashDiscardedSamples = 2U;
     static constexpr uint8_t kBacklashSampleCount = 2U * kBacklashRockCycles;
     static constexpr int32_t kMinimumBacklashRockHalfRangeTicks = 8;
@@ -107,6 +111,7 @@ private:
     static constexpr int32_t kBacklashRockHalfRangeTicks = 16384 / 24;
 
     EncoderCalibrationState state_ = EncoderCalibrationState::Idle;
+    EncoderCalibrationState failure_state_ = EncoderCalibrationState::Idle;
     EncoderCalibrationError error_ = EncoderCalibrationError::None;
     uint8_t joint_id_ = 0U;
     bool encoder_inverted_ = false;

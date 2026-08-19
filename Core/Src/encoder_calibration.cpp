@@ -34,6 +34,7 @@ bool EncoderCalibration::begin_manual(const bool encoder_available, const uint16
     previous_position_ticks_ = 0;
     manual_reverse_first_ = false;
     error_ = EncoderCalibrationError::None;
+    failure_state_ = EncoderCalibrationState::Idle;
     state_ = EncoderCalibrationState::WaitLimitA;
     return true;
 }
@@ -105,6 +106,8 @@ bool EncoderCalibration::begin_auto(
     if (!encoder_available || blocks_normal_control()) {
         return false;
     }
+    manual_reverse_first_ = false;
+    failure_state_ = EncoderCalibrationState::Idle;
     const uint16_t saved_zero_raw = data_.zero_raw;
     const uint8_t saved_zero_valid = data_.zero_valid;
     data_ = {};
@@ -129,6 +132,8 @@ bool EncoderCalibration::begin_backlash(
     if (!encoder_available || blocks_normal_control() || !has_stored_data_) {
         return false;
     }
+    manual_reverse_first_ = false;
+    failure_state_ = EncoderCalibrationState::Idle;
 
     int32_t current_position_ticks = 0;
     if (!locate_stored_position(raw, current_position_ticks) ||
@@ -147,7 +152,7 @@ bool EncoderCalibration::begin_backlash(
 
 bool EncoderCalibration::calibrate_zero(const uint16_t raw)
 {
-    if ((state_ != EncoderCalibrationState::Idle) || !has_stored_data_) {
+    if (blocks_normal_control() || !has_stored_data_) {
         return false;
     }
     encoder_calibration_data updated = data_;
@@ -158,11 +163,13 @@ bool EncoderCalibration::calibrate_zero(const uint16_t raw)
     }
     data_ = updated;
     has_stored_data_ = true;
+    state_ = EncoderCalibrationState::Idle;
     return true;
 }
 
 void EncoderCalibration::fail(const EncoderCalibrationError error)
 {
+    failure_state_ = state_;
     error_ = error;
     state_ = EncoderCalibrationState::Failed;
 }
@@ -202,7 +209,8 @@ EncoderCalibration::Action EncoderCalibration::update(
          (state_ == EncoderCalibrationState::AutoSeekLimitA) ||
          (state_ == EncoderCalibrationState::AutoBackoffA) ||
          (state_ == EncoderCalibrationState::AutoSeekLimitB) ||
-         (state_ == EncoderCalibrationState::MoveToBStart)) &&
+         (state_ == EncoderCalibrationState::MoveToBStart) ||
+         (state_ == EncoderCalibrationState::ManualSettleAtA)) &&
         ((now_ms - state_started_ms_) > kMotionTimeoutMs)) {
         fail(EncoderCalibrationError::MotionTimeout);
         action.command_velocity = true;
@@ -219,7 +227,7 @@ EncoderCalibration::Action EncoderCalibration::update(
         (state_ == EncoderCalibrationState::RockSettle) ||
         (state_ == EncoderCalibrationState::RockSweep) ||
         (state_ == EncoderCalibrationState::MoveToMiddle) ||
-        (state_ == EncoderCalibrationState::SettleAtMiddle)) {
+         (state_ == EncoderCalibrationState::SettleAtMiddle)) {
         const int32_t low = std::min<int32_t>(0, data_.manual_span_ticks) - kHardLimitToleranceTicks;
         const int32_t high = std::max<int32_t>(0, data_.manual_span_ticks) + kHardLimitToleranceTicks;
         if ((position_ticks_ < low) || (position_ticks_ > high)) {
@@ -368,10 +376,18 @@ EncoderCalibration::Action EncoderCalibration::update(
                 // as both table inputs so processing keeps the same storage
                 // format without adding another traversal of the mechanism.
                 tmc_samples_ = reverse_tmc_samples_;
-                state_ = EncoderCalibrationState::Processing;
+                state_started_ms_ = now_ms;
+                state_ = EncoderCalibrationState::ManualSettleAtA;
             } else {
                 state_ = EncoderCalibrationState::Processing;
             }
+        }
+        break;
+    case EncoderCalibrationState::ManualSettleAtA:
+        action.command_velocity = true;
+        action.velocity_steps = 0;
+        if ((now_ms - state_started_ms_) >= kSettleTimeMs) {
+            state_ = EncoderCalibrationState::Processing;
         }
         break;
     case EncoderCalibrationState::Processing: {
@@ -496,7 +512,13 @@ int32_t EncoderCalibration::velocity_toward(const int32_t target) const
 {
     const int32_t desired_raw_sign = (target >= position_ticks_) ? 1 : -1;
     const int32_t raw_sign_for_positive_tmc = encoder_inverted_ ? -1 : 1;
-    return desired_raw_sign * raw_sign_for_positive_tmc * kCalibrationVelocitySteps;
+    const bool accelerated_manual_pass = manual_reverse_first_ &&
+        ((state_ == EncoderCalibrationState::MoveToBStart) ||
+         (state_ == EncoderCalibrationState::ReverseSweepToA));
+    const int32_t velocity = accelerated_manual_pass
+        ? kManualCalibrationVelocitySteps
+        : kCalibrationVelocitySteps;
+    return desired_raw_sign * raw_sign_for_positive_tmc * velocity;
 }
 
 bool EncoderCalibration::reached(const int32_t target, const int32_t previous, const int32_t current) const
@@ -743,7 +765,8 @@ bool EncoderCalibration::prepare_automatic_span(const uint16_t raw)
     if ((span_abs < kMinimumSpanTicks) || (span_abs >= kMaximumSpanTicks)) {
         return false;
     }
-    const int32_t margin = std::clamp<int32_t>(span_abs / 50, 16, 200);
+    constexpr int32_t kManualSafeMarginTicks = 20;
+    const int32_t margin = std::min(kManualSafeMarginTicks, (span_abs - 1) / 2);
     data_.safe_margin_ticks = static_cast<uint16_t>(margin);
     const int32_t direction = (span > 0) ? 1 : -1;
     safe_start_ticks_ = direction * margin;
@@ -755,6 +778,11 @@ bool EncoderCalibration::prepare_automatic_span(const uint16_t raw)
 
 EncoderCalibrationState EncoderCalibration::state() const { return state_; }
 EncoderCalibrationError EncoderCalibration::error() const { return error_; }
+
+int32_t EncoderCalibration::failure_state() const
+{
+    return static_cast<int32_t>(failure_state_);
+}
 
 int32_t EncoderCalibration::progress_percent() const
 {
@@ -786,7 +814,11 @@ int32_t EncoderCalibration::progress_percent() const
     return (state_ == EncoderCalibrationState::Complete) ? 100 : 0;
 }
 
-bool EncoderCalibration::blocks_normal_control() const { return state_ != EncoderCalibrationState::Idle; }
+bool EncoderCalibration::blocks_normal_control() const
+{
+    return (state_ != EncoderCalibrationState::Idle) &&
+           (state_ != EncoderCalibrationState::Complete);
+}
 const encoder_calibration_data& EncoderCalibration::data() const { return data_; }
 bool EncoderCalibration::has_stored_data() const { return has_stored_data_; }
 bool EncoderCalibration::calibrated_position_ticks(

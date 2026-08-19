@@ -152,6 +152,7 @@ bool motor_backlash_calibration_start(void);
 bool motor_zero_calibrate(void);
 int32_t motor_calibration_state(void);
 int32_t motor_calibration_error(void);
+int32_t motor_calibration_failure_state(void);
 int32_t motor_calibration_progress(void);
 void motor_calibration_data(int32_t* values, uint8_t capacity, uint8_t* count);
 

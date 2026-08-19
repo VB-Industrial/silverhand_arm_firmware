@@ -5,6 +5,11 @@ PI_HOST="${1:-${RUKA_PI_HOST:-pi@10.77.0.4}}"
 CAN_INTERFACE="${2:-${RUKA_CAN_INTERFACE:-vcan1.0}}"
 APP_HEX="${3:-build/RelWithDebInfo/silver_hand_firmware.hex}"
 
+# Always rebuild before selecting the image so a stale firmware for another
+# joint can never be uploaded under the configured node ID.
+cmake --preset RelWithDebInfo
+cmake --build --preset RelWithDebInfo -j
+
 JOINT_INDEX="$(sed -n 's/.*SR_JOINT_INDEX = \([0-9][0-9]*\)U.*/\1/p' Core/Inc/robot_config.h)"
 if [ -z "$JOINT_INDEX" ]; then
     echo "Cannot determine SR_JOINT_INDEX from robot_config.h" >&2

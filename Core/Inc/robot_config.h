@@ -9,14 +9,14 @@
 extern "C" {
 #endif
 
-static const uint8_t SR_JOINT_INDEX = 5U;
+static const uint8_t SR_JOINT_INDEX = 4U;
 
 // Cyphal uavcan.node.GetInfo software version. Increment these manually before
 // flashing a new firmware series: 2.<commit> with the uncommitted trial in
 // software_vcs_revision_id.
 static const uint8_t SR_FIRMWARE_VERSION_MAJOR = 2U;
 static const uint8_t SR_FIRMWARE_VERSION_MINOR = 48U;
-static const uint64_t SR_FIRMWARE_VERSION_TRIAL = 0U;
+static const uint64_t SR_FIRMWARE_VERSION_TRIAL = 12U;
 
 // Fusion offset remains available through pos_get for tuning and logging, but it
 // must not stop motion until the slip detector has been validated on hardware.
@@ -70,11 +70,11 @@ typedef struct robot_joint_profile {
  */
 static const robot_joint_profile kRobotJointProfiles[] = {
     {1U, 21U, 100U, 1121U, 1131U, 1001U, 7509U, 17U, 3.9F, 12, 4, 1, 7680000U, 50.0F, 4.0F, 4785U, 0.8F, 0.2F, 0.95F, 0.05F, 0.1F, 0.1F, 0.12F, true, true, 1, -2.91F, 2.91F, 0.076699019F},
-    {2U, 22U, 100U, 1122U, 1132U, 1001U, 7509U, 23U, 10.2F, 31, 6, -1, 5120000U, 50.0F, 1.0F, 9871U, 0.8F, 0.2F, 0.95F, 0.05F, 0.1F, 0.1F, 0.12F, true, true, 0, -3.58F, 0.02F, 0.068645716F},
-    {3U, 23U, 100U, 1123U, 1133U, 1001U, 7509U, 17U, 3.9F, 12, 4, -1, 5120000U, 50.0F, 1.0F, 6769U, 0.8F, 0.2F, 0.95F, 0.05F, 0.1F, 0.1F, 0.12F, true, true, 0, 0.0F, 5.24F, 0.076699019F},
-    {4U, 24U, 100U, 1124U, 1134U, 1001U, 7509U, 14U, 0.3F, 5, 2, 1, 2458010U, 19.203208F, 2.5F, 0U, 0.8F, 0.2F, 0.95F, 0.05F, 0.1F, 0.1F, 0.12F, true, true, 1, -2.81F, 2.81F, 0.076699019F},
+    {2U, 22U, 100U, 1122U, 1132U, 1001U, 7509U, 23U, 10.2F, 31, 6, -1, 5120000U, 50.0F, 1.0F, 9871U, 0.8F, 0.2F, 0.95F, 0.05F, 0.1F, 0.1F, 0.12F, true, true, 0, -3.37F, 0.02F, 0.068645716F},
+    {3U, 23U, 100U, 1123U, 1133U, 1001U, 7509U, 17U, 3.9F, 12, 4, -1, 5120000U, 50.0F, 1.0F, 6769U, 0.8F, 0.2F, 0.95F, 0.05F, 0.1F, 0.1F, 0.12F, true, true, 0, 0.0F, 5.11F, 0.076699019F},
+    {4U, 24U, 100U, 1124U, 1134U, 1001U, 7509U, 14U, 0.3F, 5, 2, 1, 2458010U, 19.203208F, 2.5F, 0U, 0.8F, 0.2F, 0.95F, 0.05F, 0.1F, 0.1F, 0.12F, true, true, 1, -2.42F, 3.20F, 0.076699019F},
     {5U, 25U, 100U, 1125U, 1135U, 1001U, 7509U, 14U, 0.3F, 5, 2, -1, 2458010U, 19.203208F, 2.5F, 0U, 0.8F, 0.2F, 0.95F, 0.05F, 0.1F, 0.1F, 0.12F, true, true, 0, -2.39F, 2.39F, 0.076699019F},
-    {6U, 26U, 100U, 1126U, 1136U, 1001U, 7509U, 14U, 0.3F, 5, 2, 1, 2458010U, 19.203208F, 2.5F, 0U, 0.8F, 0.2F, 0.95F, 0.05F, 0.1F, 0.1F, 0.12F, true, true, 1, -3.12F, 3.12F, 0.076699019F},
+    {6U, 26U, 100U, 1126U, 1136U, 1001U, 7509U, 14U, 0.3F, 5, 2, 1, 2458010U, 19.203208F, 2.5F, 0U, 0.8F, 0.2F, 0.95F, 0.05F, 0.1F, 0.1F, 0.12F, true, true, 1, -2.82F, 2.84F, 0.076699019F},
 };
 static const robot_joint_profile* const kRobotJointProfile = &kRobotJointProfiles[SR_JOINT_INDEX - 1U];
 

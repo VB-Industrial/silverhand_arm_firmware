@@ -357,8 +357,12 @@ JointLimitEnvelope joint_limit_envelope(void)
         std::isfinite(limits.hard_upper_rad) &&
         std::isfinite(configured_soft_width_rad) &&
         (configured_soft_width_rad > 0.0F) &&
-        (limits.hard_lower_rad >= physical.hard_lower_rad - kEncoderRadiansPerTick) &&
-        (limits.hard_upper_rad <= physical.hard_upper_rad + kEncoderRadiansPerTick) &&
+        // A logical hard limit may intentionally coincide with the physical
+        // calibration stop. Accept the same 24-tick encoder uncertainty used
+        // by the spike gate; this affects localization validation only and
+        // does not widen the commanded hard limits.
+        (limits.hard_lower_rad >= physical.hard_lower_rad - kFusionSpikeThresholdRad) &&
+        (limits.hard_upper_rad <= physical.hard_upper_rad + kFusionSpikeThresholdRad) &&
         (limits.hard_lower_rad < limits.soft_lower_rad) &&
         (limits.soft_lower_rad < limits.soft_upper_rad) &&
         (limits.soft_upper_rad < limits.hard_upper_rad);
@@ -1000,11 +1004,25 @@ void initialize_startup_recovery(void)
         return;
     }
 
+    // Do not stop exactly at the soft boundary. The TMC shaft may reach that
+    // target while the output side is still taking up gearbox backlash, which
+    // leaves the encoder outside the soft range and recovery stuck forever.
+    const float recovery_clearance_rad =
+        calibrated_backlash_radians() +
+        kBacklashMismatchMarginRad +
+        kServoStopToleranceRad;
+    const float operating_midpoint_rad =
+        0.5F * (operating.soft_lower_rad + operating.soft_upper_rad);
+
     if (position_rad < operating.hard_lower_rad) {
-        g_startup_recovery_target_rad = operating.soft_lower_rad;
+        g_startup_recovery_target_rad = std::min(
+            operating.soft_lower_rad + recovery_clearance_rad,
+            operating_midpoint_rad);
         g_startup_recovery_state = MOTOR_STARTUP_RECOVERY_TO_LOWER_SOFT;
     } else {
-        g_startup_recovery_target_rad = operating.soft_upper_rad;
+        g_startup_recovery_target_rad = std::max(
+            operating.soft_upper_rad - recovery_clearance_rad,
+            operating_midpoint_rad);
         g_startup_recovery_state = MOTOR_STARTUP_RECOVERY_TO_UPPER_SOFT;
     }
 
@@ -2079,6 +2097,11 @@ extern "C" int32_t motor_calibration_state(void)
 extern "C" int32_t motor_calibration_error(void)
 {
     return static_cast<int32_t>(g_encoder_calibration.error());
+}
+
+extern "C" int32_t motor_calibration_failure_state(void)
+{
+    return g_encoder_calibration.failure_state();
 }
 
 extern "C" int32_t motor_calibration_progress(void)
