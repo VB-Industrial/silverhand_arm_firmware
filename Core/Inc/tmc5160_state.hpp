@@ -40,6 +40,9 @@ public:
     uint32_t health_read_failure_count() const;
     uint32_t enable_readback_mismatch_count() const;
     uint32_t critical_status_count() const;
+    uint32_t initialize_count() const;
+    uint32_t enable_count() const;
+    uint32_t disable_count() const;
 
 private:
     bool configure_and_enable();
@@ -55,6 +58,9 @@ private:
     uint32_t health_read_failure_count_ = 0U;
     uint32_t enable_readback_mismatch_count_ = 0U;
     uint32_t critical_status_count_ = 0U;
+    uint32_t initialize_count_ = 0U;
+    uint32_t enable_count_ = 0U;
+    uint32_t disable_count_ = 0U;
     tmc5160_fault_snapshot fault_snapshot_{};
     uint8_t health_read_failure_streak_ = 0U;
     uint8_t enable_readback_mismatch_streak_ = 0U;

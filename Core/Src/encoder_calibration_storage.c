@@ -19,6 +19,7 @@ enum {
 
 static const uint32_t CALIBRATION_MAGIC = 0x43454853UL; /* "SHEC" */
 static const uint32_t CRC32_POLYNOMIAL = 0xEDB88320UL;
+static encoder_calibration_storage_diagnostics storage_diagnostics;
 
 typedef struct calibration_record {
     uint32_t magic;
@@ -245,6 +246,7 @@ static bool read_record(const uint16_t address, const uint8_t joint_id, calibrat
 
 bool encoder_calibration_storage_load(uint8_t joint_id, encoder_calibration_data* data)
 {
+    storage_diagnostics.connected = at24_isConnected() != 0;
     if ((data == NULL) || (at24_isConnected() == 0)) {
         return false;
     }
@@ -252,15 +254,23 @@ bool encoder_calibration_storage_load(uint8_t joint_id, encoder_calibration_data
     calibration_record b;
     const bool valid_a = read_record(CALIBRATION_SLOT_A, joint_id, &a);
     const bool valid_b = read_record(CALIBRATION_SLOT_B, joint_id, &b);
+    storage_diagnostics.valid_slot_mask = (valid_a ? 1U : 0U) | (valid_b ? 2U : 0U);
     if (!valid_a && !valid_b) {
+        storage_diagnostics.active_slot = 0U;
+        storage_diagnostics.sequence = 0U;
         return false;
     }
-    *data = (valid_b && (!valid_a || sequence_is_newer(b.data.sequence, a.data.sequence))) ? b.data : a.data;
+    const bool use_b = valid_b && (!valid_a || sequence_is_newer(b.data.sequence, a.data.sequence));
+    *data = use_b ? b.data : a.data;
+    storage_diagnostics.active_slot = use_b ? 2U : 1U;
+    storage_diagnostics.sequence = data->sequence;
     return true;
 }
 
 bool encoder_calibration_storage_save(uint8_t joint_id, encoder_calibration_data* data)
 {
+    storage_diagnostics.connected = at24_isConnected() != 0;
+    storage_diagnostics.last_save_ok = 0U;
     if ((data == NULL) || (at24_isConnected() == 0)) {
         return false;
     }
@@ -293,5 +303,18 @@ bool encoder_calibration_storage_save(uint8_t joint_id, encoder_calibration_data
         return false;
     }
     *data = verify.data;
+    storage_diagnostics.last_save_ok = 1U;
+    storage_diagnostics.save_count++;
+    storage_diagnostics.active_slot = (address == CALIBRATION_SLOT_A) ? 1U : 2U;
+    storage_diagnostics.valid_slot_mask |= (address == CALIBRATION_SLOT_A) ? 1U : 2U;
+    storage_diagnostics.sequence = data->sequence;
     return true;
+}
+
+void encoder_calibration_storage_get_diagnostics(
+    encoder_calibration_storage_diagnostics* diagnostics)
+{
+    if (diagnostics != NULL) {
+        *diagnostics = storage_diagnostics;
+    }
 }

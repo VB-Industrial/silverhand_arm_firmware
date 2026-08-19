@@ -222,6 +222,36 @@ All VS Code build and OpenOCD tasks run inside WSL and do not invoke `sudo`.
 
 ## Runtime diagnostics
 
+The following additional registers are read-only and intended for fleet-wide
+inspection after flashing:
+
+- `version` (`integer32[4]`): `[major, minor, trial, joint_index]`.
+- `limits` (`real32[9]`): `[localized, calibration_physical_lower,
+  logical_hard_lower, soft_lower, soft_upper, logical_hard_upper,
+  calibration_physical_upper, startup_recovery_state,
+  startup_recovery_target]`. The physical limits are derived from the corrected
+  encoder calibration table and its stored zero; the logical limits come from
+  `robot_config.h`.
+- `control_diag` (`real32[8]`): `[control_mode, target_position,
+  position_error, command_velocity, tmc_target_steps, position_reached,
+  command_age_ms, servo_state]`.
+- `tmc_diag` (`integer32[11]`): `[GSTAT, DRV_STATUS, IOIN, GCONF, CHOPCONF,
+  IHOLD_IRUN, RAMPMODE, XACTUAL, XTARGET, VACTUAL, RAMPSTAT]`.
+- `boot_diag` (`integer32[5]`): `[uptime_ms, reset_reason,
+  tmc_initialize_count, tmc_enable_count, tmc_disable_count]`.
+- `cyphal_diag` (`integer32[6]`): `[accepted_rx_count, periodic_tx_count,
+  servo_command_age_ms, direct_command_age_ms,
+  controller_heartbeat_age_ms, last_command_source_node]`. An age is zero until
+  the corresponding message has first been received.
+- `encoder_diag` (`real32[12]`): `[raw, corrected_ticks, calibrated_angle,
+  read_count, error_count, maximum_frame_delta, rejected_spikes,
+  persistent_residuals, hybrid_state, backlash_rad, innovation_rad,
+  encoder_weight]`.
+- `eeprom_diag` (`integer32[6]`): `[connected, valid_slot_mask, active_slot,
+  sequence, last_save_ok, saves_since_boot]`; active slots are `1=A`, `2=B`.
+- `fault_history` (`integer32[6]`): the most recent persistent ring-log entry as
+  `[valid, sequence, uptime_ms, fault_mask, GSTAT, DRV_STATUS]`.
+
 Cyphal command and feedback subjects are defined per joint in `robot_config.h`:
 
 - `1001`: shared `Planar.0.1` joint feedback; identify a joint by source node-ID.
@@ -230,6 +260,14 @@ Cyphal command and feedback subjects are defined per joint in `robot_config.h`:
   in joint rad/s from the controller.
 
 The node exposes a compact public interface of twelve Cyphal registers:
+
+The standard `uavcan.node.GetInfo.1.0` response exposes the manually maintained
+firmware build as `2.<commit-number>`. `software_vcs_revision_id` contains the
+uncommitted development-trial number. The three values are hardcoded as
+`SR_FIRMWARE_VERSION_MAJOR`, `SR_FIRMWARE_VERSION_MINOR`, and
+`SR_FIRMWARE_VERSION_TRIAL` in `robot_config.h`; update them before flashing a
+new firmware series. This makes mixed joint firmware visible in a Cyphal node
+monitor without a custom diagnostic register.
 
 - `pos_get` (read-only `real32[36]`): `[encoder_raw, tmc_raw_steps,
   encoder_angle, tmc_angle, fusion_offset, fused_angle, fused_velocity,

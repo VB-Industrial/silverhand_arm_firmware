@@ -23,8 +23,10 @@
 
 extern "C" {
 #include "communications.h"
+#include "encoder_calibration_storage.h"
 #include "motor.h"
 #include "system_watchdog.h"
+#include "tmc5160.h"
 #include "utility.h"
 
 TYPE_ALIAS(HBeat, uavcan_node_Heartbeat_1_0)
@@ -33,6 +35,12 @@ TYPE_ALIAS(DirectVelocityMsg, uavcan_si_unit_angular_velocity_Scalar_1_0)
 
 std::byte buffer[sizeof(CyphalInterface) + sizeof(G4CAN) + sizeof(SystemAllocator)];
 std::shared_ptr<CyphalInterface> interface;
+static uint32_t g_cyphal_rx_count = 0U;
+static uint32_t g_cyphal_tx_count = 0U;
+static uint32_t g_last_servo_command_ms = 0U;
+static uint32_t g_last_direct_command_ms = 0U;
+static uint32_t g_last_controller_heartbeat_ms = 0U;
+static uint8_t g_last_command_source_node = 0U;
 
 
 void error_handler() { Error_Handler(); }
@@ -47,6 +55,10 @@ public:
     void handler(const uavcan_node_Heartbeat_1_0& hbeat, CanardRxTransfer* transfer) override {
         UNUSED(hbeat);
         if (transfer != nullptr) {
+            g_cyphal_rx_count++;
+            if (transfer->metadata.remote_node_id == kRobotJointProfile->controller_node_id) {
+                g_last_controller_heartbeat_ms = HAL_GetTick();
+            }
             motor_note_heartbeat(HAL_GetTick(), transfer->metadata.remote_node_id);
         }
     }
@@ -66,6 +78,9 @@ public:
             (transfer->metadata.remote_node_id != kRobotJointProfile->controller_node_id)) {
             return;
         }
+        g_cyphal_rx_count++;
+        g_last_servo_command_ms = HAL_GetTick();
+        g_last_command_source_node = transfer->metadata.remote_node_id;
         motor_command(
             js_in.angular_position.radian,
             js_in.angular_velocity.radian_per_second,
@@ -89,13 +104,16 @@ public:
             (transfer->metadata.remote_node_id != kRobotJointProfile->controller_node_id)) {
             return;
         }
+        g_cyphal_rx_count++;
+        g_last_direct_command_ms = HAL_GetTick();
+        g_last_command_source_node = transfer->metadata.remote_node_id;
         motor_move_radians_per_second(command.radian_per_second);
     }
 };
 
 DirectVelocityReader* direct_velocity_reader;
 NodeInfoReader* nireader;
-static constexpr size_t NUMBER_OF_REGISTERS = 12;
+static constexpr size_t NUMBER_OF_REGISTERS = 21;
 
 RegistersHandler<NUMBER_OF_REGISTERS>* registers_handler;
 
@@ -379,6 +397,59 @@ void arm_handler(
     response._mutable = true;
 }
 
+void version_handler(const uavcan_register_Value_1_0&, uavcan_register_Value_1_0& out, RegisterAccessResponse::Type& response)
+{
+    const int32_t v[] = {SR_FIRMWARE_VERSION_MAJOR, SR_FIRMWARE_VERSION_MINOR, static_cast<int32_t>(SR_FIRMWARE_VERSION_TRIAL), kRobotJointProfile->joint_index};
+    set_register_int32_array(out, v, std::size(v)); response.persistent = false; response._mutable = false;
+}
+void limits_handler(const uavcan_register_Value_1_0&, uavcan_register_Value_1_0& out, RegisterAccessResponse::Type& response)
+{
+    motor_limit_diagnostics l{}; motor_extended_diagnostics x{}; motor_limit_get_diagnostics(&l); motor_extended_get_diagnostics(&x);
+    const float v[] = {x.localized ? 1.0F : 0.0F, x.physical_lower_rad, l.hard_lower_rad, l.soft_lower_rad, l.soft_upper_rad, l.hard_upper_rad, x.physical_upper_rad, static_cast<float>(motor_startup_recovery_state_get()), motor_startup_recovery_target_get()};
+    set_register_real32_array(out, v, std::size(v)); response.persistent = false; response._mutable = false;
+}
+void control_diag_handler(const uavcan_register_Value_1_0&, uavcan_register_Value_1_0& out, RegisterAccessResponse::Type& response)
+{
+    motor_servo_diagnostics s{}; motor_extended_diagnostics x{}; motor_servo_get_diagnostics(&s); motor_extended_get_diagnostics(&x);
+    const float v[] = {static_cast<float>(motor_control_mode_get()), s.target_position_rad, s.position_error_rad, s.command_velocity_rad_s, static_cast<float>(x.target_steps), x.position_reached ? 1.0F : 0.0F, static_cast<float>(s.command_age_ms), static_cast<float>(s.state)};
+    set_register_real32_array(out, v, std::size(v)); response.persistent = false; response._mutable = false;
+}
+void tmc_diag_handler(const uavcan_register_Value_1_0&, uavcan_register_Value_1_0& out, RegisterAccessResponse::Type& response)
+{
+    const int32_t v[] = {tmc5160_read_reg(TMC5160_REG_GSTAT), tmc5160_read_reg(TMC5160_REG_DRV_STATUS), tmc5160_read_reg(TMC5160_REG_IOIN), tmc5160_read_reg(TMC5160_REG_GCONF), tmc5160_read_reg(TMC5160_REG_CHOPCONF), tmc5160_read_reg(TMC5160_REG_IHOLD_IRUN), tmc5160_read_reg(TMC5160_REG_RAMPMODE), tmc5160_read_reg(TMC5160_REG_XACTUAL), tmc5160_read_reg(TMC5160_REG_XTARGET), tmc5160_read_reg(TMC5160_REG_VACTUAL), tmc5160_read_reg(TMC5160_REG_RAMP_STAT)};
+    set_register_int32_array(out, v, std::size(v)); response.persistent = false; response._mutable = false;
+}
+void boot_diag_handler(const uavcan_register_Value_1_0&, uavcan_register_Value_1_0& out, RegisterAccessResponse::Type& response)
+{
+    motor_extended_diagnostics x{}; motor_extended_get_diagnostics(&x);
+    const int32_t v[] = {static_cast<int32_t>(HAL_GetTick()), static_cast<int32_t>(system_watchdog_reset_reason()), static_cast<int32_t>(x.driver_initialize_count), static_cast<int32_t>(x.driver_enable_count), static_cast<int32_t>(x.driver_disable_count)};
+    set_register_int32_array(out, v, std::size(v)); response.persistent = false; response._mutable = false;
+}
+void cyphal_diag_handler(const uavcan_register_Value_1_0&, uavcan_register_Value_1_0& out, RegisterAccessResponse::Type& response)
+{
+    const uint32_t now = HAL_GetTick();
+    const int32_t v[] = {static_cast<int32_t>(g_cyphal_rx_count), static_cast<int32_t>(g_cyphal_tx_count), static_cast<int32_t>(g_last_servo_command_ms ? now - g_last_servo_command_ms : 0U), static_cast<int32_t>(g_last_direct_command_ms ? now - g_last_direct_command_ms : 0U), static_cast<int32_t>(g_last_controller_heartbeat_ms ? now - g_last_controller_heartbeat_ms : 0U), g_last_command_source_node};
+    set_register_int32_array(out, v, std::size(v)); response.persistent = false; response._mutable = false;
+}
+void encoder_diag_handler(const uavcan_register_Value_1_0&, uavcan_register_Value_1_0& out, RegisterAccessResponse::Type& response)
+{
+    motor_encoder_diagnostics e{}; motor_fusion_diagnostics f{}; motor_extended_diagnostics x{}; motor_encoder_get_diagnostics(&e); motor_fusion_get_diagnostics(&f); motor_extended_get_diagnostics(&x);
+    const float v[] = {static_cast<float>(e.raw_frame), static_cast<float>(x.corrected_encoder_ticks), f.encoder_angle_rad, static_cast<float>(e.transfer_count), static_cast<float>(e.error_count), static_cast<float>(e.maximum_frame_delta), static_cast<float>(f.rejected_spike_count), static_cast<float>(f.persistent_residual_count), static_cast<float>(f.hybrid_state), f.backlash_rad, f.innovation_rad, f.encoder_weight};
+    set_register_real32_array(out, v, std::size(v)); response.persistent = false; response._mutable = false;
+}
+void eeprom_diag_handler(const uavcan_register_Value_1_0&, uavcan_register_Value_1_0& out, RegisterAccessResponse::Type& response)
+{
+    encoder_calibration_storage_diagnostics d{}; encoder_calibration_storage_get_diagnostics(&d);
+    const int32_t v[] = {d.connected, d.valid_slot_mask, d.active_slot, static_cast<int32_t>(d.sequence), d.last_save_ok, static_cast<int32_t>(d.save_count)};
+    set_register_int32_array(out, v, std::size(v)); response.persistent = false; response._mutable = false;
+}
+void fault_history_handler(const uavcan_register_Value_1_0&, uavcan_register_Value_1_0& out, RegisterAccessResponse::Type& response)
+{
+    fault_log_record log{}; const bool valid = motor_fault_log_last(&log);
+    const int32_t v[] = {valid ? 1 : 0, static_cast<int32_t>(log.sequence), static_cast<int32_t>(log.uptime_ms), static_cast<int32_t>(log.fault_mask), static_cast<int32_t>(log.tmc_gstat), static_cast<int32_t>(log.tmc_drv_status)};
+    set_register_int32_array(out, v, std::size(v)); response.persistent = false; response._mutable = false;
+}
+
 void fail_ack_handler(
     const uavcan_register_Value_1_0& v_in,
     uavcan_register_Value_1_0& v_out,
@@ -485,6 +556,7 @@ void send_JS(void) {             //float* pos, float* vel, float* eff
 		kRobotJointProfile->feedback_port_id,
 		&int_transfer_id
 	);
+    g_cyphal_tx_count++;
 }
 
 void heartbeat() {
@@ -509,6 +581,7 @@ void heartbeat() {
 		uavcan_node_Heartbeat_1_0_FIXED_PORT_ID_,
 		&hbeat_transfer_id
 	);
+    g_cyphal_tx_count++;
     uptime += 1;
 }
 
@@ -534,6 +607,15 @@ void setup_cyphal(FDCAN_HandleTypeDef* handler) {
             RegisterDefinition{"zero_set", zero_calibration_handler},
             RegisterDefinition{"luft_cal", backlash_calibration_handler},
             RegisterDefinition{"arm", arm_handler},
+            RegisterDefinition{"version", version_handler},
+            RegisterDefinition{"limits", limits_handler},
+            RegisterDefinition{"control_diag", control_diag_handler},
+            RegisterDefinition{"tmc_diag", tmc_diag_handler},
+            RegisterDefinition{"boot_diag", boot_diag_handler},
+            RegisterDefinition{"cyphal_diag", cyphal_diag_handler},
+            RegisterDefinition{"encoder_diag", encoder_diag_handler},
+            RegisterDefinition{"eeprom_diag", eeprom_diag_handler},
+            RegisterDefinition{"fault_history", fault_history_handler},
         },
         interface
     );
@@ -542,8 +624,10 @@ void setup_cyphal(FDCAN_HandleTypeDef* handler) {
         "joint_" + std::to_string(kRobotJointProfile->joint_index),
         uavcan_node_Version_1_0{1, 0},
         uavcan_node_Version_1_0{1, 0},
-        uavcan_node_Version_1_0{0, 1},
-        0
+        uavcan_node_Version_1_0{
+            SR_FIRMWARE_VERSION_MAJOR,
+            SR_FIRMWARE_VERSION_MINOR},
+        SR_FIRMWARE_VERSION_TRIAL
     );
 }
 

@@ -25,8 +25,18 @@ typedef struct encoder_calibration_data {
     int16_t correction_ticks[ENCODER_CALIBRATION_MAX_POINTS];
 } encoder_calibration_data;
 
+typedef struct encoder_calibration_storage_diagnostics {
+    uint8_t valid_slot_mask;
+    uint8_t active_slot;
+    uint8_t last_save_ok;
+    uint8_t connected;
+    uint32_t sequence;
+    uint32_t save_count;
+} encoder_calibration_storage_diagnostics;
+
 bool encoder_calibration_storage_load(uint8_t joint_id, encoder_calibration_data* data);
 bool encoder_calibration_storage_save(uint8_t joint_id, encoder_calibration_data* data);
+void encoder_calibration_storage_get_diagnostics(encoder_calibration_storage_diagnostics* diagnostics);
 
 #ifdef __cplusplus
 }

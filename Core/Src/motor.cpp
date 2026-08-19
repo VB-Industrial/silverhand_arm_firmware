@@ -1911,6 +1911,27 @@ extern "C" bool motor_driver_get_diagnostics(motor_driver_diagnostics* const dia
     return true;
 }
 
+extern "C" bool motor_extended_get_diagnostics(motor_extended_diagnostics* const diagnostics)
+{
+    if (diagnostics == nullptr) {
+        return false;
+    }
+    const JointLimitEnvelope physical = calibration_table_envelope();
+    int32_t corrected_ticks = 0;
+    const bool localized = g_encoder_calibration.calibrated_position_ticks(
+        g_encoder_angle_raw, corrected_ticks);
+    diagnostics->physical_lower_rad = physical.hard_lower_rad;
+    diagnostics->physical_upper_rad = physical.hard_upper_rad;
+    diagnostics->corrected_encoder_ticks = apply_output_encoder_direction(corrected_ticks);
+    diagnostics->target_steps = static_cast<int32_t>(tmc5160_read_reg(TMC5160_REG_XTARGET));
+    diagnostics->driver_initialize_count = g_tmc_driver.initialize_count();
+    diagnostics->driver_enable_count = g_tmc_driver.enable_count();
+    diagnostics->driver_disable_count = g_tmc_driver.disable_count();
+    diagnostics->localized = localized;
+    diagnostics->position_reached = tmc5160_position_reached();
+    return true;
+}
+
 extern "C" int32_t motor_startup_recovery_state_get(void)
 {
     return static_cast<int32_t>(g_startup_recovery_state);

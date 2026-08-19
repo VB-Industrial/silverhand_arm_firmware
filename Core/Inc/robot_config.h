@@ -11,6 +11,13 @@ extern "C" {
 
 static const uint8_t SR_JOINT_INDEX = 5U;
 
+// Cyphal uavcan.node.GetInfo software version. Increment these manually before
+// flashing a new firmware series: 2.<commit> with the uncommitted trial in
+// software_vcs_revision_id.
+static const uint8_t SR_FIRMWARE_VERSION_MAJOR = 2U;
+static const uint8_t SR_FIRMWARE_VERSION_MINOR = 47U;
+static const uint64_t SR_FIRMWARE_VERSION_TRIAL = 2U;
+
 // Fusion offset remains available through pos_get for tuning and logging, but it
 // must not stop motion until the slip detector has been validated on hardware.
 static const bool SR_ENABLE_FUSION_OFFSET_FAULT = false;

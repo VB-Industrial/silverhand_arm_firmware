@@ -88,6 +88,18 @@ typedef struct motor_driver_diagnostics {
     uint32_t critical_status_count;
 } motor_driver_diagnostics;
 
+typedef struct motor_extended_diagnostics {
+    float physical_lower_rad;
+    float physical_upper_rad;
+    int32_t corrected_encoder_ticks;
+    int32_t target_steps;
+    uint32_t driver_initialize_count;
+    uint32_t driver_enable_count;
+    uint32_t driver_disable_count;
+    bool localized;
+    bool position_reached;
+} motor_extended_diagnostics;
+
 typedef enum motor_startup_recovery_state {
     MOTOR_STARTUP_RECOVERY_CHECKING = 0,
     MOTOR_STARTUP_RECOVERY_IN_RANGE = 1,
@@ -130,6 +142,7 @@ bool motor_fusion_get_diagnostics(motor_fusion_diagnostics* diagnostics);
 bool motor_servo_get_diagnostics(motor_servo_diagnostics* diagnostics);
 bool motor_limit_get_diagnostics(motor_limit_diagnostics* diagnostics);
 bool motor_driver_get_diagnostics(motor_driver_diagnostics* diagnostics);
+bool motor_extended_get_diagnostics(motor_extended_diagnostics* diagnostics);
 int32_t motor_startup_recovery_state_get(void);
 float motor_startup_recovery_target_get(void);
 

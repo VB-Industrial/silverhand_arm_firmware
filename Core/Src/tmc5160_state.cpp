@@ -15,6 +15,7 @@ constexpr uint8_t kCriticalStatusThreshold = 2U;
 
 bool Tmc5160StateMachine::initialize(const uint8_t initial_current)
 {
+    initialize_count_++;
     initial_current_ = initial_current;
     health_read_failure_count_ = 0U;
     enable_readback_mismatch_count_ = 0U;
@@ -63,6 +64,7 @@ bool Tmc5160StateMachine::enable()
     }
 
     state_ = Tmc5160State::Enabled;
+    enable_count_++;
     error_ = Tmc5160Error::None;
     last_status_update_ms_ = HAL_GetTick();
     return true;
@@ -102,6 +104,7 @@ bool Tmc5160StateMachine::disable()
     }
 
     state_ = Tmc5160State::Disabled;
+    disable_count_++;
     error_ = Tmc5160Error::None;
     return true;
 }
@@ -191,6 +194,10 @@ uint32_t Tmc5160StateMachine::critical_status_count() const
 {
     return critical_status_count_;
 }
+
+uint32_t Tmc5160StateMachine::initialize_count() const { return initialize_count_; }
+uint32_t Tmc5160StateMachine::enable_count() const { return enable_count_; }
+uint32_t Tmc5160StateMachine::disable_count() const { return disable_count_; }
 
 bool Tmc5160StateMachine::configure_and_enable()
 {
