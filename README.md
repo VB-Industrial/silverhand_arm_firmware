@@ -296,6 +296,31 @@ The default streaming update omits per-frame ACKs, waits 3 ms between DATA
 frames, and validates the complete image size and CRC32 at `DONE`. The legacy
 per-frame-confirmed mode remains available with `--ack-each-frame`.
 
+### Remote update through the RUKA Raspberry Pi
+
+The Raspberry Pi keeps the CAN uploader at
+`/opt/ruka2/firmware-tools/flash_bootloader_socketcan.py` and exposes the
+validated, serialized update command `/usr/local/sbin/ruka-flash-can`.
+`scripts/flash_can.sh` uploads only the locally-built application HEX and then
+invokes that command.  By default the Pi is addressed over WireGuard as
+`pi@10.77.0.4`:
+
+```bash
+./scripts/flash_can.sh
+```
+
+Override the destination and CAN interface when needed:
+
+```bash
+RUKA_PI_HOST=pi@192.168.30.146 RUKA_CAN_INTERFACE=vcan1.1 \
+  ./scripts/flash_can.sh
+```
+
+The script derives the Cyphal node-ID from `SR_JOINT_INDEX`, uploads
+`build/RelWithDebInfo/silver_hand_firmware.hex`, and never accepts the combined
+first-installation image. The Pi keeps timestamped copies and a per-node
+`latest` symlink in `/var/lib/ruka2-firmware/`; concurrent updates are rejected.
+
 Cyphal command and feedback subjects are defined per joint in `robot_config.h`:
 
 - `1001`: shared `Planar.0.1` joint feedback; identify a joint by source node-ID.
