@@ -251,6 +251,50 @@ inspection after flashing:
   sequence, last_save_ok, saves_since_boot]`; active slots are `1=A`, `2=B`.
 - `fault_history` (`integer32[6]`): the most recent persistent ring-log entry as
   `[valid, sequence, uptime_ms, fault_mask, GSTAT, DRV_STATUS]`.
+- `bootloader` (`integer32`): write `1` to stop the motor, preserve this joint's
+  CAN transport settings in STM32 backup registers, and reboot into VBBoot.
+
+## CAN firmware updates
+
+The normal application is linked at `0x08003000`; the first 12 KiB are reserved
+for VBBoot. A regular build produces:
+
+- `silver_hand_firmware.hex` — application-only image used for later CAN
+  updates;
+- `silver_hand_firmware_full.bin` — VBBoot plus application, used for the first
+  installation with ST-Link.
+
+Initialize submodules and build both images:
+
+```bash
+git submodule update --init --recursive
+cmake --preset RelWithDebInfo
+cmake --build --preset RelWithDebInfo
+```
+
+Install `build/RelWithDebInfo/silver_hand_firmware_full.bin` once at flash
+address `0x08000000`. Subsequent updates from the Raspberry Pi are performed
+for one joint at a time. For example, for node 26:
+
+```bash
+y r 26 bootloader 1
+python3 VBBoot/tools/flash_bootloader_socketcan.py \
+  --hex build/RelWithDebInfo/silver_hand_firmware.hex \
+  --channel vcan1.0 --node-id 26 --id-format extended \
+  --app-end 0x08080000 --data-chunk-size 47 \
+  --inter-frame-delay-ms 3 --brs
+```
+
+The bootloader validates image size and CRC32 before jumping to the new
+application. If transfer or validation fails, it remains in boot mode so the
+same node can be flashed again. Do not use the combined `full.bin` as the CAN
+update payload. The uploader sends 47 application bytes per 48-byte CAN FD
+frame. The Ethernet-CAN bridge used by RUKA2
+does not currently preserve the maximum 64-byte payload reliably.
+
+The default streaming update omits per-frame ACKs, waits 3 ms between DATA
+frames, and validates the complete image size and CRC32 at `DONE`. The legacy
+per-frame-confirmed mode remains available with `--ack-each-frame`.
 
 Cyphal command and feedback subjects are defined per joint in `robot_config.h`:
 

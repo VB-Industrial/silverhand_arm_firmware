@@ -29,6 +29,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "as50xx.h"
+#include "bootloader_request.h"
 #include "communications.h"
 #include "motor.h"
 #include "robot_config.h"
@@ -138,6 +139,7 @@ int main(void)
           send_JS();
       }
       cyphal_loop();
+      bootloader_request_process();
       if (motor_cycle_completed) {
           system_watchdog_refresh();
       }

@@ -23,6 +23,7 @@
 
 extern "C" {
 #include "communications.h"
+#include "bootloader_request.h"
 #include "encoder_calibration_storage.h"
 #include "motor.h"
 #include "system_watchdog.h"
@@ -113,7 +114,7 @@ public:
 
 DirectVelocityReader* direct_velocity_reader;
 NodeInfoReader* nireader;
-static constexpr size_t NUMBER_OF_REGISTERS = 21;
+static constexpr size_t NUMBER_OF_REGISTERS = 22;
 
 RegistersHandler<NUMBER_OF_REGISTERS>* registers_handler;
 
@@ -450,6 +451,18 @@ void fault_history_handler(const uavcan_register_Value_1_0&, uavcan_register_Val
     set_register_int32_array(out, v, std::size(v)); response.persistent = false; response._mutable = false;
 }
 
+void bootloader_handler(const uavcan_register_Value_1_0& in, uavcan_register_Value_1_0& out,
+                        RegisterAccessResponse::Type& response)
+{
+    int32_t command = 0;
+    if (try_get_register_int32(in, command) && (command == 1)) {
+        bootloader_request_schedule();
+    }
+    set_register_int32(out, bootloader_request_pending() ? 1 : 0);
+    response.persistent = false;
+    response._mutable = true;
+}
+
 void fail_ack_handler(
     const uavcan_register_Value_1_0& v_in,
     uavcan_register_Value_1_0& v_out,
@@ -616,6 +629,7 @@ void setup_cyphal(FDCAN_HandleTypeDef* handler) {
             RegisterDefinition{"encoder_diag", encoder_diag_handler},
             RegisterDefinition{"eeprom_diag", eeprom_diag_handler},
             RegisterDefinition{"fault_history", fault_history_handler},
+            RegisterDefinition{"bootloader", bootloader_handler},
         },
         interface
     );

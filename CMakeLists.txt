@@ -1,5 +1,7 @@
 cmake_minimum_required(VERSION 3.22)
 
+include(ExternalProject)
+
 set(CMAKE_PROJECT_NAME silver_hand_firmware)
 
 set(CMAKE_C_STANDARD 11)
@@ -22,6 +24,7 @@ message("Build type: " ${CMAKE_BUILD_TYPE})
 
 option(SR_ARM_ENABLE_CYPHAL "Enable Cyphal/CANFD transport" ON)
 option(SR_ARM_ENABLE_MOTOR_CONTROL "Enable motor-control application" ON)
+option(SR_BUILD_BOOTLOADER "Build the VBBoot CAN bootloader and combined factory image" ON)
 
 add_executable(${CMAKE_PROJECT_NAME})
 
@@ -30,6 +33,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/cmake/stm32cubemx/CMakeLists.txt")
 endif()
 
 set(USER_SOURCES
+    Core/Src/bootloader_request.c
     Core/Src/fault_manager.cpp
     Core/Src/fault_log.c
     Core/Src/encoder_calibration.cpp
@@ -89,3 +93,45 @@ add_custom_command(TARGET ${CMAKE_PROJECT_NAME} POST_BUILD
     COMMAND ${CMAKE_OBJCOPY} -O ihex $<TARGET_FILE:${CMAKE_PROJECT_NAME}> ${CMAKE_PROJECT_NAME}.hex
     COMMENT "Building ${CMAKE_PROJECT_NAME}.bin and ${CMAKE_PROJECT_NAME}.hex"
 )
+
+if(SR_BUILD_BOOTLOADER)
+    set(VBBOOT_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/VBBoot)
+    set(VBBOOT_BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR}/VBBoot)
+    set(VBBOOT_BIN ${VBBOOT_BINARY_DIR}/VBBoot.bin)
+    set(VBBOOT_PADDED_BIN ${CMAKE_CURRENT_BINARY_DIR}/VBBoot_padded.bin)
+    set(APP_BIN ${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_PROJECT_NAME}.bin)
+    set(FULL_BIN ${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_PROJECT_NAME}_full.bin)
+
+    if(NOT EXISTS ${VBBOOT_SOURCE_DIR}/CMakeLists.txt)
+        message(FATAL_ERROR "VBBoot submodule is missing; run git submodule update --init")
+    endif()
+
+    ExternalProject_Add(VBBoot_firmware
+        SOURCE_DIR ${VBBOOT_SOURCE_DIR}
+        BINARY_DIR ${VBBOOT_BINARY_DIR}
+        CMAKE_GENERATOR "${CMAKE_GENERATOR}"
+        CMAKE_ARGS
+            -DCMAKE_BUILD_TYPE=Release
+            -DCMAKE_TOOLCHAIN_FILE=${VBBOOT_SOURCE_DIR}/cmake/gcc-arm-none-eabi.cmake
+            -DBOOTLOADER_MCU=STM32G474xx
+            -DBOOTLOADER_STARTUP_FILE=${CMAKE_CURRENT_SOURCE_DIR}/startup_stm32g474xx.s
+            -DBOOTLOADER_APP_END=0x08080000UL
+            -DBOOTLOADER_RAM_END=0x20020000UL
+            -DBOOTLOADER_FDCAN_CLOCK_SOURCE=PLL
+            -DBOOTLOADER_FDCAN_ID_FORMAT=extended
+            -DBOOTLOADER_USE_EEPROM_CONFIG=OFF
+        INSTALL_COMMAND ""
+        BUILD_ALWAYS TRUE
+        BUILD_BYPRODUCTS ${VBBOOT_BIN}
+    )
+
+    add_custom_command(
+        OUTPUT ${FULL_BIN}
+        COMMAND ${CMAKE_OBJCOPY} -I binary -O binary --gap-fill 0xFF --pad-to 0x3000 ${VBBOOT_BIN} ${VBBOOT_PADDED_BIN}
+        COMMAND ${CMAKE_COMMAND} -E cat ${VBBOOT_PADDED_BIN} ${APP_BIN} > ${FULL_BIN}
+        DEPENDS ${CMAKE_PROJECT_NAME} VBBoot_firmware ${APP_BIN} ${VBBOOT_BIN}
+        COMMENT "Building bootloader + application factory image"
+        VERBATIM
+    )
+    add_custom_target(${CMAKE_PROJECT_NAME}_full_bin ALL DEPENDS ${FULL_BIN})
+endif()

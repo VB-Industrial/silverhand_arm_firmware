@@ -69,7 +69,19 @@
             "label": "OpenOCD: Flash project (SWD)",
             "command": "${workspaceFolder}/scripts/flash_openocd.sh",
             "args": [
-                "${workspaceFolder}/build/RelWithDebInfo/silver_hand_firmware.elf"
+                "${workspaceFolder}/build/RelWithDebInfo/silver_hand_firmware_full.bin"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "problemMatcher": []
+        },
+        {
+            "type": "shell",
+            "label": "CAN: Flash application",
+            "command": "${workspaceFolder}/scripts/flash_can.sh",
+            "args": [
+                "${input:canNodeId}"
             ],
             "options": {
                 "cwd": "${workspaceFolder}"
@@ -108,6 +120,14 @@
                 "cwd": "${workspaceFolder}"
             },
             "problemMatcher": []
+        }
+    ],
+    "inputs": [
+        {
+            "id": "canNodeId",
+            "type": "promptString",
+            "description": "Joint Cyphal node ID to flash (21-26)",
+            "default": "22"
         }
     ]
 }

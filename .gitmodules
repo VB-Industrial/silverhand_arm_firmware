@@ -1,3 +1,6 @@
 [submodule "Drivers/libcxxcanard"]
 	path = Drivers/libcxxcanard
 	url = https://github.com/VBCores/libcxxcanard.git
+[submodule "VBBoot"]
+	path = VBBoot
+	url = https://github.com/VBCores/VBBoot.git
