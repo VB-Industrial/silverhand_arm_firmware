@@ -80,8 +80,9 @@
             "type": "shell",
             "label": "CAN: Flash application",
             "command": "${workspaceFolder}/scripts/flash_can.sh",
-            "args": [
-                "${input:canNodeId}"
+            "dependsOrder": "sequence",
+            "dependsOn": [
+                "Build firmware"
             ],
             "options": {
                 "cwd": "${workspaceFolder}"
@@ -122,12 +123,5 @@
             "problemMatcher": []
         }
     ],
-    "inputs": [
-        {
-            "id": "canNodeId",
-            "type": "promptString",
-            "description": "Joint Cyphal node ID to flash (21-26)",
-            "default": "22"
-        }
-    ]
+    "inputs": []
 }

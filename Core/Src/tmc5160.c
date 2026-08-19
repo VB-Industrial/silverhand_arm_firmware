@@ -78,6 +78,7 @@
 #define TMC5160_READY_STABLE_READS      3U
 
 static uint32_t g_gconf_shadow = 0U;
+static uint32_t g_ihold_irun_shadow = 0U;
 
 
 static void tmc5160_write_reg32(const uint8_t reg_addr, const uint32_t value)
@@ -191,6 +192,7 @@ static void tmc5160_set_current_levels(const uint8_t ihold, const uint8_t irun, 
 	value |= ((uint32_t) irun) << 8;
 	value |= (uint32_t) ihold;
 	tmc5160_write_reg32(TMC5160_REG_IHOLD_IRUN, value);
+	g_ihold_irun_shadow = value;
 }
 
 static void tmc5160_set_gconf_flag(const uint32_t mask, const bool enabled)
@@ -475,7 +477,7 @@ bool tmc5160_init(int8_t init_irun)
 	g_gconf_shadow = 0U;
 
 	tmc5160_write_reg32(TMC5160_REG_CHOPCONF, 0x000000C3U);
-	tmc5160_set_current_levels((uint8_t) init_irun, (uint8_t) init_irun, 0U);
+	tmc5160_set_current_levels((uint8_t)init_irun >> 1U, (uint8_t)init_irun, 0U);
 	tmc5160_write_reg32(TMC5160_REG_TPOWERDOWN, 0x0000000AU);
 	// PWM_FREQ=2: about 23.4 kHz with the TMC5160 internal 12 MHz clock.
 	tmc5160_write_reg32(TMC5160_REG_PWMCONF, 0xC40E001EU);
@@ -497,6 +499,11 @@ bool tmc5160_init(int8_t init_irun)
 void tmc5160_set_motor_direction(int8_t dir)
 {
 	tmc5160_set_gconf_flag(TMC5160_GCONF_SHAFT_MASK, dir <= 0);
+}
+
+uint32_t tmc5160_current_configuration(void)
+{
+	return g_ihold_irun_shadow;
 }
 
 void tmc5160_set_zero()

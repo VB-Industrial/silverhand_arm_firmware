@@ -417,7 +417,7 @@ void control_diag_handler(const uavcan_register_Value_1_0&, uavcan_register_Valu
 }
 void tmc_diag_handler(const uavcan_register_Value_1_0&, uavcan_register_Value_1_0& out, RegisterAccessResponse::Type& response)
 {
-    const int32_t v[] = {tmc5160_read_reg(TMC5160_REG_GSTAT), tmc5160_read_reg(TMC5160_REG_DRV_STATUS), tmc5160_read_reg(TMC5160_REG_IOIN), tmc5160_read_reg(TMC5160_REG_GCONF), tmc5160_read_reg(TMC5160_REG_CHOPCONF), tmc5160_read_reg(TMC5160_REG_IHOLD_IRUN), tmc5160_read_reg(TMC5160_REG_RAMPMODE), tmc5160_read_reg(TMC5160_REG_XACTUAL), tmc5160_read_reg(TMC5160_REG_XTARGET), tmc5160_read_reg(TMC5160_REG_VACTUAL), tmc5160_read_reg(TMC5160_REG_RAMP_STAT)};
+    const int32_t v[] = {tmc5160_read_reg(TMC5160_REG_GSTAT), tmc5160_read_reg(TMC5160_REG_DRV_STATUS), tmc5160_read_reg(TMC5160_REG_IOIN), tmc5160_read_reg(TMC5160_REG_GCONF), tmc5160_read_reg(TMC5160_REG_CHOPCONF), static_cast<int32_t>(tmc5160_current_configuration()), tmc5160_read_reg(TMC5160_REG_RAMPMODE), tmc5160_read_reg(TMC5160_REG_XACTUAL), tmc5160_read_reg(TMC5160_REG_XTARGET), tmc5160_read_reg(TMC5160_REG_VACTUAL), tmc5160_read_reg(TMC5160_REG_RAMP_STAT)};
     set_register_int32_array(out, v, std::size(v)); response.persistent = false; response._mutable = false;
 }
 void boot_diag_handler(const uavcan_register_Value_1_0&, uavcan_register_Value_1_0& out, RegisterAccessResponse::Type& response)
