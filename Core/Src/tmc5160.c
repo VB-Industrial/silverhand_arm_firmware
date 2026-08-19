@@ -403,10 +403,15 @@ bool tmc5160_read_driver_enabled(bool* enabled)
 
 bool tmc5160_configuration_matches(void)
 {
+	return tmc5160_runtime_configuration_matches() &&
+	       (((uint32_t)tmc5160_read_reg(TMC5160_REG_RAMPMODE) & 0x3U) == 3U);
+}
+
+bool tmc5160_runtime_configuration_matches(void)
+{
 	return (((uint32_t)tmc5160_read_reg(TMC5160_REG_GCONF) & TMC5160_GCONF_READBACK_MASK) ==
 	        (g_gconf_shadow & TMC5160_GCONF_READBACK_MASK)) &&
-	       ((uint32_t)tmc5160_read_reg(TMC5160_REG_CHOPCONF) == 0x000000C3U) &&
-	       (((uint32_t)tmc5160_read_reg(TMC5160_REG_RAMPMODE) & 0x3U) == 3U);
+	       ((uint32_t)tmc5160_read_reg(TMC5160_REG_CHOPCONF) == 0x000000C3U);
 }
 
 bool tmc5160_health_check(tmc5160_health_snapshot* snapshot)

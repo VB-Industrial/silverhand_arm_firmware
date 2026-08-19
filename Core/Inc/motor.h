@@ -82,6 +82,22 @@ typedef struct motor_limit_diagnostics {
     bool active;
 } motor_limit_diagnostics;
 
+typedef struct motor_driver_diagnostics {
+    uint32_t health_read_failure_count;
+    uint32_t enable_readback_mismatch_count;
+    uint32_t critical_status_count;
+} motor_driver_diagnostics;
+
+typedef enum motor_startup_recovery_state {
+    MOTOR_STARTUP_RECOVERY_CHECKING = 0,
+    MOTOR_STARTUP_RECOVERY_IN_RANGE = 1,
+    MOTOR_STARTUP_RECOVERY_TO_LOWER_SOFT = 2,
+    MOTOR_STARTUP_RECOVERY_TO_UPPER_SOFT = 3,
+    MOTOR_STARTUP_RECOVERY_COMPLETE = 4,
+    MOTOR_STARTUP_RECOVERY_UNLOCALIZED = 5,
+    MOTOR_STARTUP_RECOVERY_FAILED = 6,
+} motor_startup_recovery_state;
+
 typedef enum motor_control_mode {
     MOTOR_CONTROL_MODE_HOLD = 0,
     MOTOR_CONTROL_MODE_SERVO = 1,
@@ -113,6 +129,9 @@ bool motor_encoder_get_diagnostics(motor_encoder_diagnostics* diagnostics);
 bool motor_fusion_get_diagnostics(motor_fusion_diagnostics* diagnostics);
 bool motor_servo_get_diagnostics(motor_servo_diagnostics* diagnostics);
 bool motor_limit_get_diagnostics(motor_limit_diagnostics* diagnostics);
+bool motor_driver_get_diagnostics(motor_driver_diagnostics* diagnostics);
+int32_t motor_startup_recovery_state_get(void);
+float motor_startup_recovery_target_get(void);
 
 bool motor_auto_calibration_start(void);
 bool motor_manual_calibration_command(int32_t command);

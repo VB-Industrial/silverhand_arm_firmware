@@ -231,7 +231,7 @@ Cyphal command and feedback subjects are defined per joint in `robot_config.h`:
 
 The node exposes a compact public interface of twelve Cyphal registers:
 
-- `pos_get` (read-only `real32[34]`): `[encoder_raw, tmc_raw_steps,
+- `pos_get` (read-only `real32[36]`): `[encoder_raw, tmc_raw_steps,
   encoder_angle, tmc_angle, fusion_offset, fused_angle, fused_velocity,
   encoder_residual, measured_backlash, control_mode, calibrated,
   hard_lower, soft_lower, soft_upper, hard_upper, allowed_velocity_min,
@@ -240,15 +240,36 @@ The node exposes a compact public interface of twelve Cyphal registers:
   rejected_spike_count, persistent_residual_count, slip_candidate,
   encoder_raw_min, encoder_raw_max, encoder_raw_span,
   encoder_maximum_frame_delta, hybrid_state, takeup_tmc_travel_rad,
-  takeup_encoder_travel_rad, encoder_weight, slip_latched]`. Angles are
+  takeup_encoder_travel_rad, encoder_weight, slip_latched,
+  startup_recovery_state, startup_recovery_target]`. Angles are
   in manipulator radians and velocities in rad/s. Fields 19 through 24 are
   non-blocking fusion/slip diagnostics. Fields 25 through 28 accumulate raw
   encoder statistics on every 10-ms motor cycle since boot; min/max are in an
   unwrapped coordinate. Fields 29 through 33 report the hybrid state,
-  current take-up travel, encoder weight, and latched slip. Calibration state and progress remain at indices 17
+  current take-up travel, encoder weight, and latched slip. Fields 34 and 35
+  report startup recovery state and its target angle. Calibration state and progress remain at indices 17
   and 18. `control_mode` is `0` hold, `1` servo, `2` direct, `3` calibration,
   or `4` raw TMC position. Raw integer positions and counters are encoded as `real32`
   because Cyphal register arrays cannot mix element types.
+
+On startup, a calibrated joint that is already inside its operational hard
+limits remains exactly where it is. If its absolute encoder position is still
+inside the calibrated table but outside an operational hard limit, the joint
+moves inward to the nearest soft limit at `0.02 rad/s`. Normal motion commands
+are blocked until this recovery finishes. An encoder position that cannot be
+localized, or a recovery whose TMC target is reached without the encoder
+returning inside the operational limits, remains blocked for manual recovery.
+`startup_recovery_state` is `0` checking, `1` already in range, `2` returning
+from the lower side, `3` returning from the upper side, `4` complete,
+`5` unlocalized, or `6` failed.
+
+The physical encoder span and the operational limits are intentionally separate.
+The EEPROM calibration table contains the two measured mechanical endpoints and
+the encoder map between them. `robot_config.h` contains per-joint
+`logical_hard_lower_rad`, `logical_hard_upper_rad`, and
+`soft_limit_margin_rad`, all expressed in joint radians relative to the stored
+zero. A logical range that does not fit inside the physical calibrated span is
+rejected as an invalid limit envelope.
 - `pos_set`: writing an absolute manipulator position in radians (`real32`)
   immediately enters fused-angle SERVO settling. This one-shot service target does not require a
   controller or network heartbeat and remains held until another command,
@@ -275,12 +296,22 @@ The node exposes a compact public interface of twelve Cyphal registers:
   slip_candidate, slip_latched]`. This is a service/debug control; normal
   startup arms automatically.
 - `fail_ack`: write `1` to acknowledge a recoverable session-latched fault.
-- `errors` (read-only `int32[22]`): `[active_mask, latched_mask, fault_level,
+- `errors` (read-only `int32[25]`): `[active_mask, latched_mask, fault_level,
   stop_reason, network_state, controller_state, tmc_state, tmc_error,
   reset_reason, encoder_read_ok, encoder_hal_status, encoder_transfer_count,
   encoder_error_count, encoder_raw_frame, encoder_valid, calibration_state,
   calibration_error, eeprom_log_sequence, eeprom_log_uptime,
-  eeprom_log_fault_mask, eeprom_log_gstat, eeprom_log_drv_status]`.
+  eeprom_log_fault_mask, eeprom_log_gstat, eeprom_log_drv_status,
+  tmc_health_read_failure_count, tmc_enable_readback_mismatch_count,
+  tmc_critical_status_count]`. The final three counters accumulate transient
+  TMC health observations since boot. A failed health read is diagnostic only:
+  it does not remove phase current or reinitialize the driver.
+
+The full TMC5160 initialization sequence is executed only once after MCU boot.
+Runtime recovery never rewrites chopper, current, or ramp configuration. It
+verifies that the powered driver retained its static configuration and, after a
+cleared critical condition, only reasserts `DRV_ENN`. A configuration mismatch
+remains faulted until the joint is reset.
 
 `fault_level` is `0` nominal, `1` warning, `2` degraded, or `3` fault.
 `stop_reason` is `0` none, `1` network offline, `2` motor slip, `3` TMC5160
@@ -346,17 +377,17 @@ therefore does not raise the DIRECT velocity-command-timeout fault.
 
 ## Output-encoder calibration
 
-Calibration builds and stores the data used by the runtime joint-angle
+Calibration builds and stores the physical data used by the runtime joint-angle
 estimator: the encoder correction table, measured TMC/output scale, effective
-backlash, physical limits, and geometric zero. Calibration is performed with
+backlash, both mechanical endpoints, and a provisional zero. Calibration is performed with
 the five-step `man_cal` command; replace node ID `21` below as appropriate.
 
 1. Run `y r 21 man_cal 1`. Firmware stops, disarms the driver, and enters
    calibration mode. The expected return value is `2`.
 2. Move the joint by hand to the first mechanical limit and run
    `y r 21 man_cal 2`. The expected return value is `3`.
-3. Move the joint by hand to the desired geometric zero, approximately in the
-   middle of its travel, and run `y r 21 man_cal 3`. The expected return value
+3. Move the joint by hand to an approximate zero, normally near the middle of
+   its travel, and run `y r 21 man_cal 3`. The expected return value
    is `4`.
 4. Move the joint by hand to the second mechanical limit and run
    `y r 21 man_cal 4`. The expected return value is `5`.
@@ -378,8 +409,11 @@ as effective backlash. Completion and any abort leave the driver disarmed.
 Monitor progress with `y r 21 pos_get`: elements 17 and 18 are calibration
 state and progress in percent. State `9` with progress `100` means success;
 state `10` means failure. Reboot the joint after a successful save before
-normal operation. The position captured in stage 3 is already the geometric
-zero; `zero_set` is needed only to adjust it later.
+normal operation. Stage 3 supplies the initial coordinate reference so the
+table can be used immediately. Put the assembled robot at its exact geometric
+zero and call `zero_set` separately to store the final raw encoder zero in
+EEPROM. This shifts the physical endpoints in logical coordinates without
+changing the physical table or the logical limits in `robot_config.h`.
 
 Calibration states are `0` idle, `1` wait limit A, `2` wait limit B, `3`
 ready, `4` move to A, `5` settle, `6` sweep to B, `7` processing, `8` saving,
@@ -513,9 +547,10 @@ AT24C64 fault log uses the final 2 KiB as a 64-record ring; the first 6 KiB are
 reserved for future calibration data.
 
 While the driver is enabled, firmware checks `IOIN`, `GSTAT` and `DRV_STATUS`
-every 100 ms. An invalid `IOIN` response is retried immediately; if both reads
-fail, firmware raises `DRV_EN` and enters the TMC communication-fault state.
-Configuration registers are verified only after driver initialization or rearm.
+every 100 ms. Transient failed health reads are counted and require three
+consecutive failures before reporting a communication diagnostic; they do not
+disarm or reinitialize the driver. Configuration registers are verified only
+after driver initialization or rearm.
 
 Raw DIRECT velocity commands must be refreshed at least once every 1 second
 (1000 ms). On timeout the firmware commands zero velocity and keeps the driver
@@ -526,10 +561,12 @@ state online.
 ## Joint travel limits
 
 With valid stored encoder calibration and geometric zero, normal SERVO and
-DIRECT control use the calibrated endpoints as hard limits. Without a complete
-EEPROM calibration, all normal motion commands are rejected and the reported
-velocity bounds are `0...0`; only calibration may move the motor. The stored
-calibration safety margin defines an inner soft boundary at each end. Outward
+DIRECT control use `logical_hard_lower_rad` and `logical_hard_upper_rad` from
+the selected `robot_config.h` profile as hard limits. Without a complete EEPROM
+calibration, or if those logical limits do not fit inside the physical table,
+all normal motion commands are rejected and the reported velocity bounds are
+`0...0`; only calibration may move the motor. `soft_limit_margin_rad` defines
+an inner soft boundary at each logical end. Outward
 DIRECT velocity is linearly reduced from its `0.12 rad/s` cap at the soft
 boundary to zero at the hard limit. SERVO uses the same envelope with its own
 `0.1 rad/s` cap. Inward velocity remains available at full speed. If the measured
@@ -537,12 +574,12 @@ position is already outside a hard limit, all farther
 outward motion is blocked while recovery motion toward the valid range remains
 allowed.
 
-The stored calibration margin is expanded when necessary so the soft zone is
+The configured soft margin is expanded when necessary so the soft zone is
 at least the conservative braking distance `v^2/(2*a) + v*t_reaction`, using
-`a = 1 rad/s^2` and `t_reaction = 20 ms`. A quarter of the calibrated travel is
+`a = 1 rad/s^2` and `t_reaction = 20 ms`. A quarter of the logical travel is
 the maximum expansion on very narrow joints.
 
-Position targets outside the stored hard range are rejected. Velocity limiting is
+Position targets outside the configured logical hard range are rejected. Velocity limiting is
 recomputed from the fused output position on every motor update, including
 between received DIRECT commands, so a silent sender cannot continue driving
 through a limit before the one-second command watchdog expires. Calibration

@@ -304,6 +304,8 @@ void pos_get_handler(
         fusion.takeup_encoder_travel_rad,
         fusion.encoder_weight,
         fusion.slip_latched ? 1.0F : 0.0F,
+        static_cast<float>(motor_startup_recovery_state_get()),
+        motor_startup_recovery_target_get(),
     };
     set_register_real32_array(v_out, values, std::size(values));
     response.persistent = false;
@@ -316,8 +318,10 @@ void errors_handler(
     RegisterAccessResponse::Type& response)
 {
     motor_encoder_diagnostics encoder{};
+    motor_driver_diagnostics driver{};
     fault_log_record log{};
     motor_encoder_get_diagnostics(&encoder);
+    motor_driver_get_diagnostics(&driver);
     motor_fault_log_last(&log);
     const int32_t values[] = {
         static_cast<int32_t>(motor_fault_active()),
@@ -342,6 +346,9 @@ void errors_handler(
         static_cast<int32_t>(log.fault_mask),
         static_cast<int32_t>(log.tmc_gstat),
         static_cast<int32_t>(log.tmc_drv_status),
+        static_cast<int32_t>(driver.health_read_failure_count),
+        static_cast<int32_t>(driver.enable_readback_mismatch_count),
+        static_cast<int32_t>(driver.critical_status_count),
     };
     set_register_int32_array(v_out, values, std::size(values));
     response.persistent = false;

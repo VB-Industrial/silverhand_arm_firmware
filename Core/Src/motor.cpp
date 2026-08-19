@@ -61,6 +61,7 @@ constexpr float kLimitReactionTimeS = 0.02F;
 constexpr float kServoStopToleranceRad = 4.0F * kEncoderRadiansPerTick;
 constexpr float kServoResumeToleranceRad = 8.0F * kEncoderRadiansPerTick;
 constexpr uint32_t kServiceStopTimeoutMs = 250U;
+constexpr float kStartupRecoveryVelocityRadS = 0.02F;
 
 uint16_t g_encoder_angle_raw = 0U;
 uint32_t g_zero_enc_runtime = 0U;
@@ -140,6 +141,10 @@ motor_hybrid_state g_hybrid_state = MOTOR_HYBRID_STATE_UNKNOWN;
 std::array<float, kSlipWindowSamples> g_slip_residual_window{};
 motor_servo_state g_servo_state = MOTOR_SERVO_STATE_INACTIVE;
 motor_control_mode g_control_mode = MOTOR_CONTROL_MODE_HOLD;
+motor_startup_recovery_state g_startup_recovery_state =
+    MOTOR_STARTUP_RECOVERY_CHECKING;
+float g_startup_recovery_target_rad = 0.0F;
+int32_t g_startup_recovery_target_steps = 0;
 
 FaultManager g_fault_manager;
 Tmc5160StateMachine g_tmc_driver;
@@ -268,7 +273,7 @@ float calibrated_backlash_radians(void)
     return std::fabs(tmc_delta_output_radians(backlash_steps));
 }
 
-JointLimitEnvelope joint_limit_envelope(void)
+JointLimitEnvelope calibration_table_envelope(void)
 {
     JointLimitEnvelope limits{};
     int32_t hard_a_ticks = 0;
@@ -319,6 +324,41 @@ JointLimitEnvelope joint_limit_envelope(void)
         std::isfinite(limits.soft_lower_rad) &&
         std::isfinite(limits.soft_upper_rad) &&
         std::isfinite(limits.hard_upper_rad) &&
+        (limits.hard_lower_rad < limits.soft_lower_rad) &&
+        (limits.soft_lower_rad < limits.soft_upper_rad) &&
+        (limits.soft_upper_rad < limits.hard_upper_rad);
+    return limits;
+}
+
+JointLimitEnvelope joint_limit_envelope(void)
+{
+    JointLimitEnvelope limits{};
+    const JointLimitEnvelope physical = calibration_table_envelope();
+    limits.hard_lower_rad = kRobotJointProfile->logical_hard_lower_rad;
+    limits.hard_upper_rad = kRobotJointProfile->logical_hard_upper_rad;
+    const float travel_rad = limits.hard_upper_rad - limits.hard_lower_rad;
+    const float configured_soft_width_rad = kRobotJointProfile->soft_limit_margin_rad;
+    const float maximum_direct_velocity_rad_s =
+        kRobotJointProfile->maximum_direct_velocity_rad_s;
+    const float required_soft_width_rad =
+        ((maximum_direct_velocity_rad_s * maximum_direct_velocity_rad_s) /
+         (2.0F * kLimitAssumedDecelerationRadS2)) +
+        (maximum_direct_velocity_rad_s * kLimitReactionTimeS);
+    const float soft_width_rad = std::max(
+        configured_soft_width_rad,
+        std::min(required_soft_width_rad, travel_rad * 0.25F));
+    limits.soft_lower_rad = limits.hard_lower_rad + soft_width_rad;
+    limits.soft_upper_rad = limits.hard_upper_rad - soft_width_rad;
+    limits.active =
+        physical.active &&
+        std::isfinite(limits.hard_lower_rad) &&
+        std::isfinite(limits.soft_lower_rad) &&
+        std::isfinite(limits.soft_upper_rad) &&
+        std::isfinite(limits.hard_upper_rad) &&
+        std::isfinite(configured_soft_width_rad) &&
+        (configured_soft_width_rad > 0.0F) &&
+        (limits.hard_lower_rad >= physical.hard_lower_rad - kEncoderRadiansPerTick) &&
+        (limits.hard_upper_rad <= physical.hard_upper_rad + kEncoderRadiansPerTick) &&
         (limits.hard_lower_rad < limits.soft_lower_rad) &&
         (limits.soft_lower_rad < limits.soft_upper_rad) &&
         (limits.soft_upper_rad < limits.hard_upper_rad);
@@ -929,6 +969,96 @@ bool manipulator_radians_to_tmc_steps(
     return true;
 }
 
+bool startup_recovery_blocks_normal_control(void)
+{
+    return (g_startup_recovery_state == MOTOR_STARTUP_RECOVERY_CHECKING) ||
+           (g_startup_recovery_state == MOTOR_STARTUP_RECOVERY_TO_LOWER_SOFT) ||
+           (g_startup_recovery_state == MOTOR_STARTUP_RECOVERY_TO_UPPER_SOFT) ||
+           (g_startup_recovery_state == MOTOR_STARTUP_RECOVERY_UNLOCALIZED) ||
+           (g_startup_recovery_state == MOTOR_STARTUP_RECOVERY_FAILED);
+}
+
+void initialize_startup_recovery(void)
+{
+    g_startup_recovery_target_rad = 0.0F;
+    g_startup_recovery_target_steps = 0;
+
+    const JointLimitEnvelope operating = joint_limit_envelope();
+    const JointLimitEnvelope table = calibration_table_envelope();
+    if (!g_output_encoder_available ||
+        !g_fusion_uses_calibrated_encoder ||
+        !operating.active ||
+        !table.active) {
+        g_startup_recovery_state = MOTOR_STARTUP_RECOVERY_UNLOCALIZED;
+        return;
+    }
+
+    const float position_rad = motor_fused_angle_manipulator();
+    if ((position_rad >= operating.hard_lower_rad) &&
+        (position_rad <= operating.hard_upper_rad)) {
+        g_startup_recovery_state = MOTOR_STARTUP_RECOVERY_IN_RANGE;
+        return;
+    }
+
+    if (position_rad < operating.hard_lower_rad) {
+        g_startup_recovery_target_rad = operating.soft_lower_rad;
+        g_startup_recovery_state = MOTOR_STARTUP_RECOVERY_TO_LOWER_SOFT;
+    } else {
+        g_startup_recovery_target_rad = operating.soft_upper_rad;
+        g_startup_recovery_state = MOTOR_STARTUP_RECOVERY_TO_UPPER_SOFT;
+    }
+
+    int32_t velocity_steps = 0;
+    if (!g_tmc_driver.is_enabled() ||
+        !manipulator_radians_to_tmc_steps(
+            g_startup_recovery_target_rad,
+            g_startup_recovery_target_steps) ||
+        !radians_to_steps_checked(
+            kStartupRecoveryVelocityRadS,
+            static_cast<int32_t>(kRobotJointProfile->joint_full_steps),
+            &velocity_steps) ||
+        (velocity_steps <= 0)) {
+        g_startup_recovery_state = MOTOR_STARTUP_RECOVERY_FAILED;
+        return;
+    }
+
+    tmc5160_position(g_startup_recovery_target_steps, velocity_steps);
+    g_control_mode = MOTOR_CONTROL_MODE_TMC_POSITION;
+}
+
+void update_startup_recovery(void)
+{
+    const bool moving =
+        (g_startup_recovery_state == MOTOR_STARTUP_RECOVERY_TO_LOWER_SOFT) ||
+        (g_startup_recovery_state == MOTOR_STARTUP_RECOVERY_TO_UPPER_SOFT);
+    if (!moving) {
+        return;
+    }
+    if (!g_tmc_driver.is_enabled() ||
+        !g_output_encoder_available ||
+        !g_fusion_uses_calibrated_encoder ||
+        !g_fault_manager.motion_allowed()) {
+        tmc5160_move(0);
+        g_startup_recovery_state = MOTOR_STARTUP_RECOVERY_FAILED;
+        g_control_mode = MOTOR_CONTROL_MODE_HOLD;
+        return;
+    }
+    if (!tmc5160_position_reached()) {
+        return;
+    }
+
+    tmc5160_move(0);
+    const JointLimitEnvelope operating = joint_limit_envelope();
+    const float position_rad = motor_fused_angle_manipulator();
+    g_startup_recovery_state =
+        operating.active &&
+                (position_rad >= operating.hard_lower_rad) &&
+                (position_rad <= operating.hard_upper_rad)
+            ? MOTOR_STARTUP_RECOVERY_COMPLETE
+            : MOTOR_STARTUP_RECOVERY_FAILED;
+    g_control_mode = MOTOR_CONTROL_MODE_HOLD;
+}
+
 void clear_servo_target(void)
 {
     g_servo_target_valid = false;
@@ -1222,7 +1352,14 @@ void update_faults(const uint32_t now_ms)
         !g_servo_requires_controller &&
         ((stop_reason == StopReason::NetworkOffline) ||
          (stop_reason == StopReason::ControllerOffline));
-    if (result.stop_motion && !service_servo_ignores_network_stop) {
+    const bool startup_recovery_ignores_network_stop =
+        ((g_startup_recovery_state == MOTOR_STARTUP_RECOVERY_TO_LOWER_SOFT) ||
+         (g_startup_recovery_state == MOTOR_STARTUP_RECOVERY_TO_UPPER_SOFT)) &&
+        ((stop_reason == StopReason::NetworkOffline) ||
+         (stop_reason == StopReason::ControllerOffline));
+    if (result.stop_motion &&
+        !service_servo_ignores_network_stop &&
+        !startup_recovery_ignores_network_stop) {
         tmc5160_move(0);
         clear_servo_target();
         g_control_mode = MOTOR_CONTROL_MODE_HOLD;
@@ -1325,6 +1462,7 @@ extern "C" void motor_init(void)
     g_encoder_valid_streak = g_encoder_last_read_ok ? 1U : 0U;
     sync_tmc_offset_to_encoder();
     reset_fusion_tracking(now_ms);
+    initialize_startup_recovery();
     g_last_degraded_led_toggle_ms = now_ms;
 }
 
@@ -1347,6 +1485,7 @@ extern "C" void motor_update(const uint32_t now_ms)
     update_fusion_state(now_ms);
     update_calibration_jog(now_ms);
     update_faults(now_ms);
+    update_startup_recovery();
     update_direct_control();
     update_servo_control(now_ms);
     update_degraded_led(now_ms);
@@ -1365,7 +1504,8 @@ extern "C" bool motor_command(
     }
 
     const JointLimitEnvelope limits = joint_limit_envelope();
-    if (g_encoder_calibration.blocks_normal_control() ||
+    if (startup_recovery_blocks_normal_control() ||
+        g_encoder_calibration.blocks_normal_control() ||
         !g_fault_manager.remote_motion_allowed() ||
         !g_tmc_driver.is_enabled() ||
         !limits.active ||
@@ -1435,7 +1575,8 @@ extern "C" bool motor_command(
 extern "C" bool motor_move(const int32_t velocity_command)
 {
     cancel_calibration_jog();
-    if (g_encoder_calibration.blocks_normal_control() ||
+    if (startup_recovery_blocks_normal_control() ||
+        g_encoder_calibration.blocks_normal_control() ||
         !g_fault_manager.motion_allowed() ||
         !g_tmc_driver.is_enabled() ||
         !joint_limit_envelope().active) {
@@ -1464,7 +1605,8 @@ extern "C" bool motor_set_tmc_position_steps(const int32_t target_position_steps
 {
     cancel_calibration_jog();
     const JointLimitEnvelope limits = joint_limit_envelope();
-    if (g_encoder_calibration.blocks_normal_control() ||
+    if (startup_recovery_blocks_normal_control() ||
+        g_encoder_calibration.blocks_normal_control() ||
         !g_fault_manager.motion_allowed() ||
         !g_tmc_driver.is_enabled() ||
         !limits.active) {
@@ -1524,6 +1666,7 @@ extern "C" bool motor_move_radians_per_second(const float velocity_rad_s)
 {
     cancel_calibration_jog();
     if (!std::isfinite(velocity_rad_s) ||
+        startup_recovery_blocks_normal_control() ||
         g_encoder_calibration.blocks_normal_control() ||
         !g_fault_manager.remote_motion_allowed() ||
         !g_tmc_driver.is_enabled() ||
@@ -1550,6 +1693,7 @@ extern "C" bool motor_set_position_radians(const float target_position_rad)
     cancel_calibration_jog();
     const JointLimitEnvelope limits = joint_limit_envelope();
     if (!std::isfinite(target_position_rad) ||
+        startup_recovery_blocks_normal_control() ||
         g_encoder_calibration.blocks_normal_control() ||
         !g_fault_manager.motion_allowed() ||
         !g_tmc_driver.is_enabled() ||
@@ -1606,7 +1750,10 @@ extern "C" bool motor_arm(const bool armed)
             g_custom_motion_profile_active = false;
             sync_tmc_offset_to_encoder();
             reset_fusion_tracking(HAL_GetTick());
-            g_control_mode = MOTOR_CONTROL_MODE_HOLD;
+            initialize_startup_recovery();
+            if (g_startup_recovery_state == MOTOR_STARTUP_RECOVERY_IN_RANGE) {
+                g_control_mode = MOTOR_CONTROL_MODE_HOLD;
+            }
         }
         return enabled;
     }
@@ -1750,6 +1897,30 @@ extern "C" bool motor_limit_get_diagnostics(motor_limit_diagnostics* const diagn
     return true;
 }
 
+extern "C" bool motor_driver_get_diagnostics(motor_driver_diagnostics* const diagnostics)
+{
+    if (diagnostics == nullptr) {
+        return false;
+    }
+    diagnostics->health_read_failure_count =
+        g_tmc_driver.health_read_failure_count();
+    diagnostics->enable_readback_mismatch_count =
+        g_tmc_driver.enable_readback_mismatch_count();
+    diagnostics->critical_status_count =
+        g_tmc_driver.critical_status_count();
+    return true;
+}
+
+extern "C" int32_t motor_startup_recovery_state_get(void)
+{
+    return static_cast<int32_t>(g_startup_recovery_state);
+}
+
+extern "C" float motor_startup_recovery_target_get(void)
+{
+    return g_startup_recovery_target_rad;
+}
+
 extern "C" bool motor_auto_calibration_start(void)
 {
     cancel_calibration_jog();
@@ -1872,7 +2043,10 @@ extern "C" bool motor_zero_calibrate(void)
     tmc5160_set_zero();
     sync_tmc_offset_to_encoder();
     reset_fusion_tracking(HAL_GetTick());
-    g_control_mode = MOTOR_CONTROL_MODE_HOLD;
+    initialize_startup_recovery();
+    if (g_startup_recovery_state == MOTOR_STARTUP_RECOVERY_IN_RANGE) {
+        g_control_mode = MOTOR_CONTROL_MODE_HOLD;
+    }
     return true;
 }
 

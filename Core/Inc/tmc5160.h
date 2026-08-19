@@ -117,6 +117,7 @@ void tmc5160_clear_gstat(uint32_t flags);
 bool tmc5160_read_driver_enabled(bool* enabled);
 
 bool tmc5160_configuration_matches(void);
+bool tmc5160_runtime_configuration_matches(void);
 
 bool tmc5160_health_check(tmc5160_health_snapshot* snapshot);
 
