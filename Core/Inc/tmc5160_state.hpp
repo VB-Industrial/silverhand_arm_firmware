@@ -28,7 +28,7 @@ enum class Tmc5160Error : int32_t
 class Tmc5160StateMachine final
 {
 public:
-    bool initialize(uint8_t initial_current);
+    bool initialize(uint8_t initial_hold_current, uint8_t initial_run_current);
     bool enable();
     bool disable();
     bool is_enabled() const;
@@ -52,7 +52,8 @@ private:
 
     Tmc5160State state_ = Tmc5160State::Uninitialized;
     Tmc5160Error error_ = Tmc5160Error::None;
-    uint8_t initial_current_ = 0U;
+    uint8_t initial_hold_current_ = 0U;
+    uint8_t initial_run_current_ = 0U;
     uint32_t last_status_update_ms_ = 0U;
     uint32_t last_enable_attempt_ms_ = 0U;
     uint32_t health_read_failure_count_ = 0U;

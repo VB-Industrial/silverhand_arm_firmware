@@ -85,7 +85,7 @@ typedef struct tmc5160_health_snapshot {
  *
  *
  */
-bool tmc5160_init(int8_t init_irun);
+bool tmc5160_init(uint8_t init_ihold, uint8_t init_irun);
 
 /*Position in ticks
  *
@@ -125,6 +125,7 @@ bool tmc5160_health_check(tmc5160_health_snapshot* snapshot);
 void tmc5160_effort(double effort, float max_effort, int8_t max_irun_scaler, int8_t init_irun);
 
 void tmc5160_set_run_current(uint8_t irun);
+void tmc5160_set_current(uint8_t ihold, uint8_t irun);
 
 void tmc5160_set_motor_direction(int8_t);
 

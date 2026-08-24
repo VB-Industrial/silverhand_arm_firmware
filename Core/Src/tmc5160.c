@@ -265,6 +265,11 @@ void tmc5160_set_run_current(const uint8_t irun)
 	tmc5160_set_current_levels(irun >> 1U, irun, 0U);
 }
 
+void tmc5160_set_current(const uint8_t ihold, const uint8_t irun)
+{
+	tmc5160_set_current_levels(ihold, irun, 0U);
+}
+
 
 void tmc5160_acceleration(uint32_t acc)
 {
@@ -453,7 +458,7 @@ bool tmc5160_health_check(tmc5160_health_snapshot* snapshot)
 	return true;
 }
 
-bool tmc5160_init(int8_t init_irun)
+bool tmc5160_init(const uint8_t init_ihold, const uint8_t init_irun)
 {
 	// Preserve the proven cold-start sequence.  With DRV_ENN high, establish
 	// the interface straps first.  Then enable the power stage while CHOPCONF
@@ -477,7 +482,7 @@ bool tmc5160_init(int8_t init_irun)
 	g_gconf_shadow = 0U;
 
 	tmc5160_write_reg32(TMC5160_REG_CHOPCONF, 0x000000C3U);
-	tmc5160_set_current_levels((uint8_t)init_irun >> 1U, (uint8_t)init_irun, 0U);
+	tmc5160_set_current_levels(init_ihold, init_irun, 0U);
 	tmc5160_write_reg32(TMC5160_REG_TPOWERDOWN, 0x0000000AU);
 	// PWM_FREQ=2: about 23.4 kHz with the TMC5160 internal 12 MHz clock.
 	tmc5160_write_reg32(TMC5160_REG_PWMCONF, 0xC40E001EU);

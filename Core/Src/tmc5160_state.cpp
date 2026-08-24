@@ -13,10 +13,12 @@ constexpr uint8_t kEnableReadbackMismatchThreshold = 3U;
 constexpr uint8_t kCriticalStatusThreshold = 2U;
 }  // namespace
 
-bool Tmc5160StateMachine::initialize(const uint8_t initial_current)
+bool Tmc5160StateMachine::initialize(const uint8_t initial_hold_current,
+                                     const uint8_t initial_run_current)
 {
     initialize_count_++;
-    initial_current_ = initial_current;
+    initial_hold_current_ = initial_hold_current;
+    initial_run_current_ = initial_run_current;
     health_read_failure_count_ = 0U;
     enable_readback_mismatch_count_ = 0U;
     critical_status_count_ = 0U;
@@ -201,7 +203,7 @@ uint32_t Tmc5160StateMachine::disable_count() const { return disable_count_; }
 
 bool Tmc5160StateMachine::configure_and_enable()
 {
-    if (!tmc5160_init(static_cast<int8_t>(initial_current_))) {
+    if (!tmc5160_init(initial_hold_current_, initial_run_current_)) {
         error_ = Tmc5160Error::Communication;
         return false;
     }

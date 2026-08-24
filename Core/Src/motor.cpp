@@ -51,10 +51,10 @@ constexpr uint32_t kManualQuietWindowMs = 500U;
 constexpr float kManualQuietSpanRad = 24.0F * kEncoderRadiansPerTick;
 constexpr uint32_t kServoCommandTimeoutMs = 500U;
 constexpr float kServoKp = 4.0F;
-constexpr float kServoFinishingThresholdRadS = 0.02F;
 constexpr float kServoFinishingVelocityRadS = 0.02F;
 constexpr float kServoMaximumCorrectionVelocityRadS =
     15.0F * static_cast<float>(M_PI) / 180.0F;
+constexpr float kPositionRegisterVelocityRadS = 0.2F;
 constexpr float kPositionRegisterAccelerationRadS2 = 1.0F;
 constexpr float kLimitAssumedDecelerationRadS2 = 1.0F;
 constexpr float kLimitReactionTimeS = 0.02F;
@@ -97,6 +97,8 @@ float g_servo_position_error_rad = 0.0F;
 float g_servo_command_velocity_rad_s = 0.0F;
 float g_servo_maximum_correction_velocity_rad_s = kServoMaximumCorrectionVelocityRadS;
 float g_servo_tracking_velocity_rad_s = 0.0F;
+float g_servo_peak_velocity_rad_s = 0.0F;
+float g_servo_tmc_correction_velocity_rad_s = kServoFinishingVelocityRadS;
 float g_direct_requested_velocity_rad_s = 0.0F;
 int32_t g_prev_fusion_tmc_steps = 0;
 int32_t g_encoder_raw_unwrapped = 0;
@@ -430,14 +432,8 @@ float servo_tracking_velocity(
     const float feedforward_velocity_rad_s)
 {
     const float direction = (position_error_rad >= 0.0F) ? 1.0F : -1.0F;
-    const float feedforward_magnitude_rad_s =
-        std::fabs(feedforward_velocity_rad_s);
-    const float velocity_magnitude_rad_s =
-        (feedforward_magnitude_rad_s > kServoFinishingThresholdRadS)
-            ? feedforward_magnitude_rad_s
-            : kServoFinishingVelocityRadS;
     return limit_joint_velocity(
-        direction * velocity_magnitude_rad_s,
+        direction * std::fabs(feedforward_velocity_rad_s),
         kRobotJointProfile->maximum_servo_velocity_rad_s);
 }
 
@@ -1088,6 +1084,8 @@ void clear_servo_target(void)
     g_servo_command_velocity_rad_s = 0.0F;
     g_servo_maximum_correction_velocity_rad_s = kServoMaximumCorrectionVelocityRadS;
     g_servo_tracking_velocity_rad_s = 0.0F;
+    g_servo_peak_velocity_rad_s = 0.0F;
+    g_servo_tmc_correction_velocity_rad_s = kServoFinishingVelocityRadS;
     g_servo_tracking_velocity_steps = -1;
 }
 
@@ -1184,10 +1182,42 @@ void start_servo_tracking(
     g_servo_service_position_tracking = false;
     g_servo_maximum_correction_velocity_rad_s = kServoMaximumCorrectionVelocityRadS;
     g_servo_tracking_velocity_rad_s = std::fabs(feedforward_velocity_rad_s);
+    g_servo_peak_velocity_rad_s = std::fabs(feedforward_velocity_rad_s);
+    g_servo_tmc_correction_velocity_rad_s = std::max(
+        kServoFinishingVelocityRadS,
+        g_servo_peak_velocity_rad_s / 5.0F);
     g_servo_tracking_velocity_steps = std::abs(velocity_steps);
     g_servo_state = MOTOR_SERVO_STATE_TRACKING;
     tmc5160_position(target_position_steps, velocity_steps);
     g_control_mode = MOTOR_CONTROL_MODE_SERVO;
+}
+
+bool start_service_position_segment(
+    const float position_error_rad,
+    const float velocity_rad_s)
+{
+    int32_t delta_steps = 0;
+    int32_t velocity_steps = 0;
+    if (!radians_to_steps_checked(
+            manipulator_to_native_radians(position_error_rad),
+            static_cast<int32_t>(kRobotJointProfile->joint_full_steps),
+            &delta_steps) ||
+        !radians_to_steps_checked(
+            std::fabs(velocity_rad_s),
+            static_cast<int32_t>(kRobotJointProfile->joint_full_steps),
+            &velocity_steps) ||
+        (velocity_steps <= 0)) {
+        return false;
+    }
+
+    const int32_t current_steps = tmc5160_position_read();
+    const int32_t target_steps = static_cast<int32_t>(
+        static_cast<uint32_t>(current_steps) + static_cast<uint32_t>(delta_steps));
+    tmc5160_position(target_steps, velocity_steps);
+    g_servo_command_velocity_rad_s = std::copysign(velocity_rad_s, position_error_rad);
+    g_servo_tracking_velocity_steps = velocity_steps;
+    g_servo_state = MOTOR_SERVO_STATE_TRACKING;
+    return true;
 }
 
 void update_servo_control(const uint32_t now_ms)
@@ -1200,6 +1230,41 @@ void update_servo_control(const uint32_t now_ms)
         (g_servo_requires_controller && !g_fault_manager.remote_motion_allowed()) ||
         !g_tmc_driver.is_enabled()) {
         clear_servo_target();
+        return;
+    }
+
+    if (g_servo_service_position_tracking) {
+        g_servo_position_error_rad =
+            g_servo_target_position_rad - motor_fused_angle_manipulator();
+        if (!tmc5160_position_reached()) {
+            return;
+        }
+
+        const float absolute_error_rad = std::fabs(g_servo_position_error_rad);
+        if (g_servo_at_target) {
+            if (absolute_error_rad <= kServoResumeToleranceRad) {
+                tmc5160_move(0);
+                g_servo_command_velocity_rad_s = 0.0F;
+                return;
+            }
+            g_servo_at_target = false;
+        }
+
+        if (absolute_error_rad <= kServoStopToleranceRad) {
+            tmc5160_move(0);
+            g_servo_at_target = true;
+            g_servo_command_velocity_rad_s = 0.0F;
+            g_servo_state = MOTOR_SERVO_STATE_AT_TARGET;
+            return;
+        }
+
+        if (!start_service_position_segment(
+                g_servo_position_error_rad,
+                g_servo_tmc_correction_velocity_rad_s)) {
+            tmc5160_move(0);
+            clear_servo_target();
+            g_control_mode = MOTOR_CONTROL_MODE_HOLD;
+        }
         return;
     }
 
@@ -1241,11 +1306,12 @@ void update_servo_control(const uint32_t now_ms)
             }
             g_servo_service_position_tracking = false;
             g_servo_command_velocity_rad_s = 0.0F;
-        } else if (command_stream_alive) {
+        } else if (command_stream_alive &&
+                   (std::fabs(limited_tracking_velocity_rad_s) > 0.0F)) {
             return;
         }
-        // The TMC keeps approaching the last position while commands are fresh.
-        // A silent command stream transfers that last target to the fused-angle loop.
+        // A silent stream, or an explicit zero feed-forward velocity with a
+        // remaining position error, transfers the last target to settling.
         g_servo_state = MOTOR_SERVO_STATE_SETTLING;
     }
 
@@ -1267,6 +1333,32 @@ void update_servo_control(const uint32_t now_ms)
     if (g_servo_at_target) {
         tmc5160_move(0);
         g_servo_command_velocity_rad_s = 0.0F;
+        return;
+    }
+
+    if (g_servo_requires_controller) {
+        g_servo_service_position_tracking = true;
+        g_servo_tmc_correction_velocity_rad_s = std::max(
+            kServoFinishingVelocityRadS,
+            g_servo_peak_velocity_rad_s / 5.0F);
+        int32_t correction_velocity_steps = 0;
+        if (!radians_to_steps_checked(
+                g_servo_tmc_correction_velocity_rad_s,
+                static_cast<int32_t>(kRobotJointProfile->joint_full_steps),
+                &correction_velocity_steps) ||
+            (correction_velocity_steps <= 0)) {
+            tmc5160_move(0);
+            clear_servo_target();
+            g_control_mode = MOTOR_CONTROL_MODE_HOLD;
+            return;
+        }
+        // Keep the final XTARGET supplied by MoveIt and let the TMC complete
+        // its own ramp before the fused-angle correction segments begin.
+        tmc5160_velocity(correction_velocity_steps);
+        g_servo_tracking_velocity_steps = correction_velocity_steps;
+        g_servo_command_velocity_rad_s = std::copysign(
+            g_servo_tmc_correction_velocity_rad_s,
+            g_servo_position_error_rad);
         return;
     }
 
@@ -1446,7 +1538,8 @@ extern "C" void motor_init(void)
     const uint32_t now_ms = HAL_GetTick();
 
     g_fault_manager.initialize(now_ms, kRobotJointProfile->joint_index);
-    g_tmc_driver.initialize(static_cast<uint8_t>(kRobotJointProfile->init_irun));
+    g_tmc_driver.initialize(static_cast<uint8_t>(kRobotJointProfile->init_ihold),
+                            static_cast<uint8_t>(kRobotJointProfile->init_irun));
     clear_servo_target();
     g_control_mode = MOTOR_CONTROL_MODE_HOLD;
 
@@ -1572,6 +1665,9 @@ extern "C" bool motor_command(
         g_servo_last_command_ms = now_ms;
         g_servo_tracking_velocity_rad_s =
             std::fabs(limited_tracking_velocity_rad_s);
+        g_servo_peak_velocity_rad_s = std::max(
+            g_servo_peak_velocity_rad_s,
+            std::fabs(limited_tracking_velocity_rad_s));
         g_servo_command_velocity_rad_s = limited_tracking_velocity_rad_s;
         g_servo_state = g_servo_at_target
             ? MOTOR_SERVO_STATE_AT_TARGET
@@ -1733,21 +1829,27 @@ extern "C" bool motor_set_position_radians(const float target_position_rad)
     g_servo_position_error_rad =
         target_position_rad - motor_fused_angle_manipulator();
     g_servo_command_velocity_rad_s = std::copysign(
-        kRobotJointProfile->maximum_servo_velocity_rad_s,
+        kPositionRegisterVelocityRadS,
         g_servo_position_error_rad);
     g_servo_last_command_ms = now_ms;
     g_servo_target_valid = true;
     g_servo_at_target = false;
     g_servo_requires_controller = false;
-    g_servo_service_position_tracking = false;
-    g_servo_maximum_correction_velocity_rad_s =
-        kRobotJointProfile->maximum_servo_velocity_rad_s;
-    g_servo_tracking_velocity_rad_s = kRobotJointProfile->maximum_servo_velocity_rad_s;
+    g_servo_service_position_tracking = true;
+    g_servo_maximum_correction_velocity_rad_s = kPositionRegisterVelocityRadS;
+    g_servo_tracking_velocity_rad_s = kPositionRegisterVelocityRadS;
+    g_servo_peak_velocity_rad_s = kPositionRegisterVelocityRadS;
+    g_servo_tmc_correction_velocity_rad_s = kPositionRegisterVelocityRadS / 5.0F;
     g_servo_tracking_velocity_steps = -1;
-    g_servo_state = MOTOR_SERVO_STATE_SETTLING;
     tmc5160_acceleration(static_cast<uint32_t>(acceleration_steps));
     g_custom_motion_profile_active = true;
-    tmc5160_move(0);
+    if (!start_service_position_segment(
+            g_servo_position_error_rad,
+            g_servo_tracking_velocity_rad_s)) {
+        clear_servo_target();
+        restore_default_motion_profile();
+        return false;
+    }
     g_control_mode = MOTOR_CONTROL_MODE_SERVO;
     return true;
 }
@@ -1765,6 +1867,10 @@ extern "C" bool motor_arm(const bool armed)
         }
         const bool enabled = g_tmc_driver.enable();
         if (enabled) {
+            // Calibration temporarily reduces the current. Restore the joint's
+            // normal hold/run pair whenever normal control is armed again.
+            tmc5160_set_current(static_cast<uint8_t>(kRobotJointProfile->init_ihold),
+                                static_cast<uint8_t>(kRobotJointProfile->init_irun));
             g_custom_motion_profile_active = false;
             sync_tmc_offset_to_encoder();
             reset_fusion_tracking(HAL_GetTick());
