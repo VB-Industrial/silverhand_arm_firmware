@@ -1666,6 +1666,14 @@ extern "C" bool motor_command(
         // identical to a preceding service-register target.  Without this,
         // pos_set could leave the session exempt from the controller watchdog.
         g_servo_requires_controller = true;
+        // tmc5160_move(0), used by the stop/hold paths, selects velocity mode.
+        // Merely updating VMAX here would then resume unlimited velocity-mode
+        // motion and XTARGET would no longer stop the joint.  Reassert the
+        // complete position command on every repeated controller target so a
+        // later non-zero velocity can never inherit velocity mode.
+        tmc5160_position(
+            target_position_steps,
+            applied_velocity_steps);
         g_servo_last_command_ms = now_ms;
         g_servo_tracking_velocity_rad_s =
             std::fabs(limited_tracking_velocity_rad_s);
