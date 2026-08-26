@@ -359,12 +359,11 @@ JointLimitEnvelope joint_limit_envelope(void)
         std::isfinite(limits.hard_upper_rad) &&
         std::isfinite(configured_soft_width_rad) &&
         (configured_soft_width_rad > 0.0F) &&
-        // A logical hard limit may intentionally coincide with the physical
-        // calibration stop. Accept the same 24-tick encoder uncertainty used
-        // by the spike gate; this affects localization validation only and
-        // does not widen the commanded hard limits.
-        (limits.hard_lower_rad >= physical.hard_lower_rad - kFusionSpikeThresholdRad) &&
-        (limits.hard_upper_rad <= physical.hard_upper_rad + kFusionSpikeThresholdRad) &&
+        // The calibrated table provides absolute localization; operational
+        // limits remain authoritative and may intentionally extend slightly
+        // beyond a calibration endpoint after the geometric zero is adjusted.
+        // Rejecting the whole envelope here also disables the safe inward
+        // startup recovery from the opposite side.
         (limits.hard_lower_rad < limits.soft_lower_rad) &&
         (limits.soft_lower_rad < limits.soft_upper_rad) &&
         (limits.soft_upper_rad < limits.hard_upper_rad);
@@ -994,8 +993,8 @@ void initialize_startup_recovery(void)
     }
 
     const float position_rad = motor_fused_angle_manipulator();
-    if ((position_rad >= operating.hard_lower_rad) &&
-        (position_rad <= operating.hard_upper_rad)) {
+    if ((position_rad >= operating.soft_lower_rad) &&
+        (position_rad <= operating.soft_upper_rad)) {
         g_startup_recovery_state = MOTOR_STARTUP_RECOVERY_IN_RANGE;
         return;
     }
@@ -1010,7 +1009,7 @@ void initialize_startup_recovery(void)
     const float operating_midpoint_rad =
         0.5F * (operating.soft_lower_rad + operating.soft_upper_rad);
 
-    if (position_rad < operating.hard_lower_rad) {
+    if (position_rad < operating.soft_lower_rad) {
         g_startup_recovery_target_rad = std::min(
             operating.soft_lower_rad + recovery_clearance_rad,
             operating_midpoint_rad);
@@ -1066,8 +1065,8 @@ void update_startup_recovery(void)
     const float position_rad = motor_fused_angle_manipulator();
     g_startup_recovery_state =
         operating.active &&
-                (position_rad >= operating.hard_lower_rad) &&
-                (position_rad <= operating.hard_upper_rad)
+                (position_rad >= operating.soft_lower_rad) &&
+                (position_rad <= operating.soft_upper_rad)
             ? MOTOR_STARTUP_RECOVERY_COMPLETE
             : MOTOR_STARTUP_RECOVERY_FAILED;
     g_control_mode = MOTOR_CONTROL_MODE_HOLD;
@@ -1662,6 +1661,11 @@ extern "C" bool motor_command(
         g_servo_target_valid && (position_rad == g_servo_target_position_rad);
     g_fault_manager.note_velocity_command(now_ms, false);
     if (same_target) {
+        // A command received on the controller subject always transfers the
+        // active SERVO session back to the controller, even when its target is
+        // identical to a preceding service-register target.  Without this,
+        // pos_set could leave the session exempt from the controller watchdog.
+        g_servo_requires_controller = true;
         g_servo_last_command_ms = now_ms;
         g_servo_tracking_velocity_rad_s =
             std::fabs(limited_tracking_velocity_rad_s);

@@ -1,31 +1,106 @@
 # Silver Rover Arm Firmware
 
-Independent firmware project for a single manipulator joint controller.
+Firmware for the six distributed RUKA2 joint controllers. Every joint runs the
+same STM32G474 application; the active hardware and kinematic profile is
+selected by `SR_JOINT_INDEX` in `Core/Inc/robot_config.h` before building.
+Joint indices 1 through 6 correspond to Cyphal node IDs 21 through 26.
 
-Current assumptions:
-- MCU family: STM32G4
-- Transport: Cyphal over CAN FD
-- Control target: one actuator node per joint
-- Baseline reference: nearby `bldc_codex` project
+The application controls a TMC5160 stepper driver, reads an absolute output
+encoder, persists calibration in AT24C64 EEPROM, and communicates with the arm
+controller over Cyphal/CAN FD. VBBoot occupies the first 12 KiB of internal
+flash and allows later application updates over CAN without an ST-Link.
 
-Goals of this package:
-- keep manipulator firmware buildable on its own
-- isolate board support, transport, and motion-control logic
-- make it possible to reuse the same firmware architecture across all six joints
+## Main features
 
-Planned module split:
-- `App/` application entry point and composition
-- `Core/` STM32 platform glue and interrupt handlers
-- `config/` board and joint-specific configuration
-- `docs/` protocol notes and implementation decisions
-- `cmake/` toolchain support
+- TMC5160-owned position ramps for smooth and repeatable motion.
+- MoveIt trajectory input with position, velocity feed-forward, acceleration,
+  and low-speed final positioning.
+- Independent DIRECT velocity control for service and controller use.
+- Hybrid joint-state estimate: absolute encoder localization and external
+  motion detection combined with repeatable TMC incremental motion.
+- Manual physical-span calibration, backlash measurement, and separate
+  geometric-zero calibration.
+- Separate physical calibration limits, logical hard limits, and braking-aware
+  soft limits.
+- Startup recovery when a calibrated joint powers up outside its logical range.
+- Latched motor-slip and TMC fault handling with explicit acknowledgement.
+- Cyphal diagnostics for control, encoder, TMC, EEPROM, boot, limits, faults,
+  and firmware version.
+- Initial/recovery flashing over SWD and routine application updates through
+  VBBoot over CAN FD.
 
-Near-term milestones:
-1. Import the minimal STM32G4 build baseline.
-2. Extract reusable Cyphal transport adapter.
-3. Define joint command and telemetry contract.
-4. Port and clean up the motor-control loop.
-5. Add board profile support for all manipulator joints.
+## Joint configuration
+
+`kRobotJointProfiles` in `Core/Inc/robot_config.h` is the authoritative table
+for node/subject IDs, motor direction, encoder direction, gearing, currents,
+speed limits, and logical travel limits. Always set `SR_JOINT_INDEX` to the
+physical joint being built. The CAN flashing script derives the destination
+node from this value, preventing a build configured for one joint from being
+silently sent to another node.
+
+The manually maintained version is exposed both by `uavcan.node.GetInfo` and
+the `version` register:
+
+```text
+2.<repository commit number>.<uncommitted trial number>
+```
+
+Update `SR_FIRMWARE_VERSION_MAJOR`, `SR_FIRMWARE_VERSION_MINOR`, and
+`SR_FIRMWARE_VERSION_TRIAL` before distributing a new image. The fourth value
+in the `version` register is the compiled joint index.
+
+Current motion/current profiles are:
+
+| Joint | Node | IHOLD | IRUN | SERVO/DIRECT limit, rad/s |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 21 | 2 | 6 | 0.7 |
+| 2 | 22 | 3 | 6 | 0.5 |
+| 3 | 23 | 2 | 6 | 0.5 |
+| 4 | 24 | 1 | 3 | 1.0 |
+| 5 | 25 | 1 | 3 | 1.0 |
+| 6 | 26 | 1 | 3 | 1.0 |
+
+## Runtime modes
+
+The active mode is reported in `pos_get` and `control_diag`:
+
+| Value | Mode | Purpose |
+| ---: | --- | --- |
+| 0 | HOLD | Driver holds its current TMC position; no active motion target. |
+| 1 | SERVO | Absolute joint target from MoveIt/Cyphal or `pos_set`. |
+| 2 | DIRECT | Joint velocity from the Cyphal velocity subject or `move`. |
+| 3 | CALIBRATION | Physical-span, backlash, or zero calibration activity. |
+| 4 | TMC_POSITION | Raw TMC target from `tmc_pos_set` or internal recovery. |
+
+Feedback is independent of the command source. The same hybrid estimator and
+the same fused joint angle remain active in SERVO, DIRECT, and HOLD. When the
+driver is disarmed, deliberate hand motion is followed from the absolute
+encoder and slip detection is disabled.
+
+### Common service operations
+
+Replace node 26 with the required joint node:
+
+```bash
+# Inspect firmware, position, limits, and faults.
+y r 26 version
+y r 26 pos_get
+y r 26 limits
+y r 26 errors
+
+# Move to an absolute joint angle in radians at the service speed.
+y r 26 pos_set 0.5
+
+# Disarm/rearm and acknowledge a recoverable latched fault.
+y r 26 arm 0
+y r 26 arm 1
+y r 26 fail_ack 1
+```
+
+`pos_set`, calibration, `move`, and `tmc_pos_set` are service/debug interfaces.
+Normal coordinated operation uses the per-joint Cyphal SERVO subjects from
+controller node 100. Keep the arm mechanically supported before disarming a
+loaded joint, calibrating, or entering the bootloader.
 
 ## Development environment
 
@@ -76,11 +151,17 @@ cmake --preset RelWithDebInfo
 cmake --build --preset RelWithDebInfo
 ```
 
-The resulting firmware image is:
+The build produces three useful images:
 
 ```text
 build/RelWithDebInfo/silver_hand_firmware.elf
+build/RelWithDebInfo/silver_hand_firmware.hex
+build/RelWithDebInfo/silver_hand_firmware_full.bin
 ```
+
+The ELF is intended for debugging, the HEX contains only the application for
+CAN updates, and `full.bin` combines VBBoot with the application for initial
+installation or SWD recovery.
 
 To discard a cache created on another machine or operating system and configure
 again:
@@ -155,9 +236,11 @@ Detach and attach ST-Link again after installing the rules. If OpenOCD still
 reports `LIBUSB_ERROR_ACCESS`, check that the rules file was found and restart
 WSL with `wsl --shutdown` from PowerShell.
 
-## Flash and debug
+## Initial installation and SWD recovery
 
-Build and flash the default image from WSL:
+The first installation of VBBoot, recovery from a damaged bootloader, and
+low-level debugging require ST-Link. Build and flash the combined image at
+`0x08000000` from WSL:
 
 ```bash
 cmake --preset RelWithDebInfo
@@ -207,8 +290,10 @@ The workspace exposes these status-bar buttons through
 `.vscode/command-buttons.json`:
 
 - `Build` runs `Build firmware`.
-- `Flash` runs `OpenOCD: Flash project (SWD)`.
-- `Build + Flash` configures, builds and flashes sequentially.
+- `Flash ST-Link` writes the combined VBBoot/application image over SWD.
+- `Flash CAN` builds the selected joint and updates its application through
+  the Raspberry Pi and VBBoot.
+- `Build + Flash` configures, builds, and flashes through ST-Link.
 
 Other useful entry points:
 
@@ -254,7 +339,9 @@ inspection after flashing:
 - `bootloader` (`integer32`): write `1` to stop the motor, preserve this joint's
   CAN transport settings in STM32 backup registers, and reboot into VBBoot.
 
-## CAN firmware updates
+## CAN bootloader and firmware updates
+
+### Boot layout and behavior
 
 The normal application is linked at `0x08003000`; the first 12 KiB are reserved
 for VBBoot. A regular build produces:
@@ -272,8 +359,14 @@ cmake --preset RelWithDebInfo
 cmake --build --preset RelWithDebInfo
 ```
 
-Install `build/RelWithDebInfo/silver_hand_firmware_full.bin` once at flash
-address `0x08000000`. Subsequent updates from the Raspberry Pi are performed
+On every reset, VBBoot starts at `0x08000000`. With no update request it
+validates and jumps to the application at `0x08003000`. Writing `1` to the
+application's `bootloader` register stops the motor, preserves the node's CAN
+transport settings in backup registers, and performs a software reset. VBBoot
+then stays active and accepts an application image addressed to that node.
+
+Install `build/RelWithDebInfo/silver_hand_firmware_full.bin` once at
+`0x08000000`. Subsequent updates replace only the application and are performed
 for one joint at a time. For example, for node 26:
 
 ```bash
@@ -285,8 +378,8 @@ python3 VBBoot/tools/flash_bootloader_socketcan.py \
   --inter-frame-delay-ms 3 --brs
 ```
 
-The bootloader validates image size and CRC32 before jumping to the new
-application. If transfer or validation fails, it remains in boot mode so the
+The bootloader validates the complete image size and CRC32 before jumping to
+the new application. If transfer or validation fails, it remains in boot mode so the
 same node can be flashed again. Do not use the combined `full.bin` as the CAN
 update payload. The uploader sends 47 application bytes per 48-byte CAN FD
 frame. The Ethernet-CAN bridge used by RUKA2
@@ -295,6 +388,11 @@ does not currently preserve the maximum 64-byte payload reliably.
 The default streaming update omits per-frame ACKs, waits 3 ms between DATA
 frames, and validates the complete image size and CRC32 at `DONE`. The legacy
 per-frame-confirmed mode remains available with `--ack-each-frame`.
+
+If an update is interrupted, rerun the same upload for that node; no ST-Link is
+needed while VBBoot itself remains intact. Use ST-Link and `full.bin` only when
+the node cannot enter/respond in bootloader mode or the bootloader needs to be
+replaced.
 
 ### Remote update through the RUKA Raspberry Pi
 
@@ -316,10 +414,27 @@ RUKA_PI_HOST=pi@192.168.30.146 RUKA_CAN_INTERFACE=vcan1.1 \
   ./scripts/flash_can.sh
 ```
 
-The script derives the Cyphal node-ID from `SR_JOINT_INDEX`, uploads
+The script configures and rebuilds the firmware, derives the Cyphal node-ID
+from `SR_JOINT_INDEX`, uploads
 `build/RelWithDebInfo/silver_hand_firmware.hex`, and never accepts the combined
 first-installation image. The Pi keeps timestamped copies and a per-node
 `latest` symlink in `/var/lib/ruka2-firmware/`; concurrent updates are rejected.
+
+### Recommended CAN update sequence
+
+1. Set `SR_JOINT_INDEX` and the firmware version in `robot_config.h`.
+2. Ensure the Raspberry Pi can see the target node and that the arm is in a
+   mechanically safe position.
+3. Run `./scripts/flash_can.sh` or press `Flash CAN` in VS Code.
+4. Confirm `version`, `boot_diag`, and `errors` after the node returns.
+
+The script requests bootloader mode automatically through the remote wrapper;
+the explicit `y r <node> bootloader 1` command is useful for diagnosis and
+manual uploader operation.
+
+## Cyphal interface
+
+### Subjects
 
 Cyphal command and feedback subjects are defined per joint in `robot_config.h`:
 
@@ -328,7 +443,13 @@ Cyphal command and feedback subjects are defined per joint in `robot_config.h`:
 - `1131`–`1136`: per-joint `angular_velocity.Scalar.1.0` DIRECT commands
   in joint rad/s from the controller.
 
-The node exposes a compact public interface of twelve Cyphal registers:
+Only commands from `controller_node_id` (currently node 100) are accepted on
+the controller subjects. The shared feedback subject is distinguished by the
+source node ID.
+
+### Registers
+
+The node exposes the following service, control, and diagnostic registers.
 
 The standard `uavcan.node.GetInfo.1.0` response exposes the manually maintained
 firmware build as `2.<commit-number>`. `software_vcs_revision_id` contains the
@@ -354,14 +475,15 @@ monitor without a custom diagnostic register.
   encoder statistics on every 10-ms motor cycle since boot; min/max are in an
   unwrapped coordinate. Fields 29 through 33 report the hybrid state,
   current take-up travel, encoder weight, and latched slip. Fields 34 and 35
-  report startup recovery state and its target angle. Calibration state and progress remain at indices 17
-  and 18. `control_mode` is `0` hold, `1` servo, `2` direct, `3` calibration,
-  or `4` raw TMC position. Raw integer positions and counters are encoded as `real32`
-  because Cyphal register arrays cannot mix element types.
+  report startup recovery state and its target angle. Calibration state and
+  progress remain at indices 17 and 18. `control_mode` is `0` hold, `1` servo,
+  `2` direct, `3` calibration, or `4` raw TMC position. Raw integer positions
+  and counters are encoded as `real32` because Cyphal register arrays cannot
+  mix element types.
 
-On startup, a calibrated joint that is already inside its operational hard
+On startup, a calibrated joint that is already inside its operational soft
 limits remains exactly where it is. If its absolute encoder position is still
-inside the calibrated table but outside an operational hard limit, the joint
+inside the calibrated table but outside an operational soft limit, the joint
 moves inward to the nearest soft limit at `0.02 rad/s`. Normal motion commands
 are blocked until this recovery finishes. An encoder position that cannot be
 localized, or a recovery whose TMC target is reached without the encoder
@@ -378,12 +500,13 @@ the encoder map between them. `robot_config.h` contains per-joint
 zero. A logical range that does not fit inside the physical calibrated span is
 rejected as an invalid limit envelope.
 - `pos_set`: writing an absolute manipulator position in radians (`real32`)
-  immediately enters fused-angle SERVO settling. This one-shot service target does not require a
-  controller or network heartbeat and remains held until another command,
-  DIRECT mode, a fault, calibration, or reset cancels it. Its correction speed
-  is saturated by the per-joint SERVO velocity limit. The TMC5160 position
-  ramp uses `1 rad/s^2`; after the driver reports `position_reached`, the
-  fused-angle P loop removes the remaining output-position error.
+  starts a TMC-owned position segment at `0.2 rad/s`. The target is converted
+  from the current fused angle into an exact relative TMC step displacement.
+  Once the ramp reports `position_reached`, residual fused-angle error is
+  removed with short position segments at `0.04 rad/s`. Four/eight encoder-tick
+  hysteresis prevents stationary noise from causing continuous corrections.
+  This service command does not require a command stream or controller
+  heartbeat. DIRECT mode, a fault, calibration, disarm, or reset cancels it.
 - `luft_cal`: reading this trigger register starts only the low-current
   backlash-rocking stage around the current position. It preserves the stored
   limits, correction table, TMC span, and geometric zero.
@@ -475,11 +598,10 @@ been reached. The position error is not angle-wrapped because the public joint
 coordinate intentionally covers `-2*pi` through `+2*pi`.
 
 The `pos_set` register uses the same TMC-owned position-segment logic at a fixed
-`0.2 rad/s`; any fused-angle correction segments run at `0.04 rad/s`. It remains
-a closed-loop position HOLD while heartbeat from `controller_node_id` is alive.
-Loss of that controller heartbeat, a fault, a DIRECT command, or entry into
-calibration cancels the target and commands stop/HOLD. A missing SERVO update
-therefore does not raise the DIRECT velocity-command-timeout fault.
+`0.2 rad/s`; any fused-angle correction segments run at `0.04 rad/s`. It is a
+service target and does not require controller heartbeat. A fault, DIRECT
+command, another position command, disarm, or calibration cancels it. A missing
+SERVO update does not raise the DIRECT velocity-command-timeout fault.
 
 ## Output-encoder calibration
 
@@ -584,13 +706,13 @@ larger, slower threshold that declares a motor slip.
 Hybrid states are `0` unknown, `1` positive take-up, `2` positive locked, `3`
 negative take-up, `4` negative locked, `5` motion mismatch, and `6` manual or
 encoder-only motion. An encoder increment larger than 24 ticks must remain
-direction- and magnitude-consistent for six frames (60 ms) before it is accepted; an
-encoder jump exceeding the physical-rate gate is rejected. With stationary TMC,
-external motion is recognized after the encoder span within a rolling 500-ms
-stationary window exceeds 24 ticks for six frames (60 ms), so the observed idle span of about 20 ticks does
-not masquerade as hand movement while a backlash rocking span does. Once in
-`MANUAL`, the angle follows only the
-encoder through a 100-ms first-order filter; the entry threshold no longer
+direction- and magnitude-consistent for six frames (60 ms) before it is
+accepted; an encoder jump exceeding the physical-rate gate is rejected. With
+stationary TMC, external motion is recognized after the encoder span within a
+rolling 500-ms stationary window exceeds 24 ticks for six frames (60 ms), so
+the observed idle span of about 20 ticks does not masquerade as hand movement
+while a backlash rocking span does. Once in `MANUAL`, the angle follows only
+the encoder through a 100-ms first-order filter; the entry threshold no longer
 quantizes subsequent forward or reverse motion. A 500-ms encoder window no
 wider than 24 ticks confirms rest, freezes the fused angle, and returns the
 state to direction-neutral `UNKNOWN`. The next motor motion must therefore pass
@@ -673,9 +795,10 @@ calibration, or if those logical limits do not fit inside the physical table,
 all normal motion commands are rejected and the reported velocity bounds are
 `0...0`; only calibration may move the motor. `soft_limit_margin_rad` defines
 an inner soft boundary at each logical end. Outward
-DIRECT velocity is linearly reduced from its `0.12 rad/s` cap at the soft
-boundary to zero at the hard limit. SERVO uses the same envelope with its own
-`0.1 rad/s` cap. Inward velocity remains available at full speed. If the measured
+DIRECT velocity is linearly reduced from the selected joint profile's
+`maximum_direct_velocity_rad_s` at the soft boundary to zero at the hard limit.
+SERVO uses the same envelope with `maximum_servo_velocity_rad_s`. Inward
+velocity remains available at full speed. If the measured
 position is already outside a hard limit, all farther
 outward motion is blocked while recovery motion toward the valid range remains
 allowed.
